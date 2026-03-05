@@ -1,0 +1,1605 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dave's Weather Dash</title>
+
+    <!-- Tailwind (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- React 18 (UMD) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+    <!-- Babel for JSX in a single file -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Chart.js (UMD) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+    <!-- Astronomy Engine (browser build) -->
+    <script src="https://cdn.jsdelivr.net/npm/astronomy-engine@2.1.19/astronomy.browser.min.js"></script>
+
+    <style>
+      html,
+      body {
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+          "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useEffect, useMemo, useRef, useState } = React;
+
+      const ZIP_LABELS = {
+        "84321": "Christina/Katelyn",
+        "84341": "Mom & Dad",
+        "32704": "Murriott",
+        "84770": "St. George",
+      };
+      const ZIP_OPTIONS = ["84321", "84341", "32704", "84770"];
+
+      const GEO_API = "https://geocoding-api.open-meteo.com/v1/search";
+      const ZIP_API = "https://api.zippopotam.us/us/";
+
+      function formatTemp(n) {
+        if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
+        return `${Math.round(Number(n))}°F`;
+      }
+      function formatPct(n) {
+        if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
+        return `${Math.round(Number(n))}%`;
+      }
+      function formatInches(n) {
+        if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
+        const v = Number(n);
+        return `${v.toFixed(v >= 1 ? 1 : 2)} in`;
+      }
+      function formatMph(n) {
+        if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
+        return `${Math.round(Number(n))} mph`;
+      }
+
+      // Desired format: "Sat, Feb 21 2026"
+      function formatDateLabel(isoDate) {
+        try {
+          const d = new Date(`${isoDate}T12:00:00`);
+          const s = new Intl.DateTimeFormat("en-US", {
+            weekday: "short",
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+          }).format(d);
+          return s.replace(/, (\d{4})$/, " $1");
+        } catch {
+          return isoDate;
+        }
+      }
+
+      function formatHourLabel(iso) {
+        try {
+          const d = new Date(iso);
+          return d.toLocaleTimeString(undefined, { hour: "numeric" });
+        } catch {
+          return iso;
+        }
+      }
+
+      function isLikelyZip(q) {
+        return /^\d{5}$/.test(String(q ?? "").trim());
+      }
+
+      function nicePlaceLabel({ name, admin1, country_code }) {
+        const parts = [name, admin1, country_code].filter(Boolean);
+        return parts.join(", ");
+      }
+
+      function weatherIcon(code) {
+        const c = Number(code);
+        if (Number.isNaN(c)) return "❓";
+        if (c === 0) return "☀️";
+        if (c === 1) return "🌤️";
+        if (c === 2) return "⛅";
+        if (c === 3) return "☁️";
+        if (c === 45 || c === 48) return "🌫️";
+        if ([51, 53, 55, 56, 57].includes(c)) return "🌦️";
+        if ([61, 63, 65, 66, 67].includes(c)) return "🌧️";
+        if ([71, 73, 75, 77].includes(c)) return "🌨️";
+        if ([80, 81, 82].includes(c)) return "🌦️";
+        if ([85, 86].includes(c)) return "🌨️";
+        if ([95, 96, 99].includes(c)) return "⛈️";
+        return "🌡️";
+      }
+
+      function weatherLabel(code) {
+        const c = Number(code);
+        if (Number.isNaN(c)) return "—";
+        const map = {
+          0: "Clear",
+          1: "Mainly clear",
+          2: "Partly cloudy",
+          3: "Overcast",
+          45: "Fog",
+          48: "Rime fog",
+          51: "Light drizzle",
+          53: "Drizzle",
+          55: "Heavy drizzle",
+          56: "Freezing drizzle",
+          57: "Freezing drizzle",
+          61: "Light rain",
+          63: "Rain",
+          65: "Heavy rain",
+          66: "Freezing rain",
+          67: "Freezing rain",
+          71: "Light snow",
+          73: "Snow",
+          75: "Heavy snow",
+          77: "Snow grains",
+          80: "Rain showers",
+          81: "Rain showers",
+          82: "Violent showers",
+          85: "Snow showers",
+          86: "Heavy snow showers",
+          95: "Thunderstorm",
+          96: "Thunderstorm + hail",
+          99: "Thunderstorm + hail",
+        };
+        return map[c] ?? `Code ${c}`;
+      }
+
+      function pick24hWindow(hourlyTimes) {
+        const now = new Date();
+        const startIdx = hourlyTimes.findIndex((t) => new Date(t) >= now);
+        if (startIdx < 0) return [0, Math.min(hourlyTimes.length, 24)];
+        const endTime = new Date(hourlyTimes[startIdx]);
+        endTime.setHours(endTime.getHours() + 24);
+        let endIdx = startIdx;
+        while (endIdx < hourlyTimes.length && new Date(hourlyTimes[endIdx]) < endTime) endIdx++;
+        return [startIdx, Math.max(endIdx, Math.min(hourlyTimes.length, startIdx + 24))];
+      }
+
+      // Convert local-time ISO string (YYYY-MM-DDTHH:mm) to UTC millis using utc_offset_seconds
+      function localIsoToUtcMillis(localIso, utcOffsetSeconds) {
+        if (!localIso) return null;
+        const [datePart, timePart] = String(localIso).split("T");
+        if (!datePart || !timePart) return null;
+        const [Y, M, D] = datePart.split("-").map((x) => parseInt(x, 10));
+        const [hh, mm] = timePart.split(":").map((x) => parseInt(x, 10));
+        if (![Y, M, D, hh, mm].every(Number.isFinite)) return null;
+        const localAsIfUtc = Date.UTC(Y, M - 1, D, hh, mm, 0);
+        return localAsIfUtc - utcOffsetSeconds * 1000;
+      }
+
+      // Background mode based on sunrise/sunset
+      function computeBgMode({ nowUtcMillis, sunriseLocalIso, sunsetLocalIso, utcOffsetSeconds }) {
+        const sunriseUtc = localIsoToUtcMillis(sunriseLocalIso, utcOffsetSeconds);
+        const sunsetUtc = localIsoToUtcMillis(sunsetLocalIso, utcOffsetSeconds);
+        const now = nowUtcMillis;
+        if (!Number.isFinite(now) || sunriseUtc == null || sunsetUtc == null) return "day";
+        const thirty = 30 * 60 * 1000;
+
+        if (now < sunriseUtc) return "night";
+        if (now >= sunsetUtc - thirty && now <= sunsetUtc + thirty) return "twilight";
+        if (now > sunsetUtc + thirty) return "night";
+        return "day";
+      }
+
+      // Feels-like approximation (heat index / wind chill)
+      function computeFeelsLikeF(tempF, rhPct, windMph) {
+        const T = Number(tempF);
+        const RH = Number(rhPct);
+        const V = Number(windMph);
+
+        if (!Number.isFinite(T)) return null;
+
+        // Wind chill
+        if (Number.isFinite(V) && T <= 50 && V >= 3) {
+          const wc =
+            35.74 + 0.6215 * T - 35.75 * Math.pow(V, 0.16) + 0.4275 * T * Math.pow(V, 0.16);
+          return wc;
+        }
+
+        // Heat index
+        if (Number.isFinite(RH) && T >= 80 && RH >= 40) {
+          const HI =
+            -42.379 +
+            2.04901523 * T +
+            10.14333127 * RH -
+            0.22475541 * T * RH -
+            0.00683783 * T * T -
+            0.05481717 * RH * RH +
+            0.00122874 * T * T * RH +
+            0.00085282 * T * RH * RH -
+            0.00000199 * T * T * RH * RH;
+          return HI;
+        }
+
+        return T;
+      }
+
+      // Moon phase
+      function moonPhaseFromAngle(angleDeg) {
+        const a = ((angleDeg % 360) + 360) % 360;
+        if (a < 22.5 || a >= 337.5) return { name: "New Moon", icon: "🌑" };
+        if (a < 67.5) return { name: "Waxing Crescent", icon: "🌒" };
+        if (a < 112.5) return { name: "First Quarter", icon: "🌓" };
+        if (a < 157.5) return { name: "Waxing Gibbous", icon: "🌔" };
+        if (a < 202.5) return { name: "Full Moon", icon: "🌕" };
+        if (a < 247.5) return { name: "Waning Gibbous", icon: "🌖" };
+        if (a < 292.5) return { name: "Last Quarter", icon: "🌗" };
+        return { name: "Waning Crescent", icon: "🌘" };
+      }
+
+      function moonInfoAtUtc(utcDate) {
+        if (!window.Astronomy) return null;
+        const t = new Astronomy.AstroTime(utcDate);
+        const phaseAngle = Astronomy.MoonPhase(t);
+        const illum = (1 - Math.cos((phaseAngle * Math.PI) / 180)) / 2;
+        return { ...moonPhaseFromAngle(phaseAngle), illumination: illum, phaseAngle };
+      }
+
+      // Vibrant planet icons (emoji-first)
+      const PLANET_ICON = {
+        Mercury: "🟤☿️",
+        Venus: "🟢♀️",
+        Mars: "🔴♂️",
+        Jupiter: "🟠 ♃",
+        Saturn: "🪐♄",
+        Uranus: "🟣⛢",
+        Neptune: "🔵♆",
+      };
+      function planetIcon(name) {
+        return PLANET_ICON[name] ?? "🪐";
+      }
+
+      // ✅ BEST FIX: format AstroTime dates using tzName (IANA time zone), DST-safe
+      function toLocalTimeLabel(astroTime, tzName) {
+        if (!astroTime || !astroTime.date) return "—";
+        try {
+          return new Intl.DateTimeFormat("en-US", {
+            timeZone: tzName,
+            hour: "numeric",
+            minute: "2-digit",
+          }).format(astroTime.date);
+        } catch {
+          return astroTime.date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+        }
+      }
+
+      function computeMoonRiseSetForDate({ lat, lon, utcOffsetSeconds, dateISO, tzName }) {
+        if (!window.Astronomy) return null;
+
+        const startUtcMillis = localIsoToUtcMillis(`${dateISO}T00:00`, utcOffsetSeconds);
+        if (!Number.isFinite(startUtcMillis)) return null;
+
+        const observer = new Astronomy.Observer(lat, lon, 0);
+        const startTime = new Astronomy.AstroTime(new Date(startUtcMillis));
+        const limitDays = 2;
+
+        let rise = null;
+        let set = null;
+
+        try {
+          rise = Astronomy.SearchRiseSet("Moon", observer, +1, startTime, limitDays);
+        } catch {}
+        try {
+          set = Astronomy.SearchRiseSet("Moon", observer, -1, startTime, limitDays);
+        } catch {}
+
+        return { rise: toLocalTimeLabel(rise, tzName), set: toLocalTimeLabel(set, tzName) };
+      }
+
+      function computeBodyRiseSetForDate({ bodyName, lat, lon, utcOffsetSeconds, dateISO, tzName }) {
+        if (!window.Astronomy) return { rise: "—", set: "—" };
+
+        const startUtcMillis = localIsoToUtcMillis(`${dateISO}T00:00`, utcOffsetSeconds);
+        if (!Number.isFinite(startUtcMillis)) return { rise: "—", set: "—" };
+
+        const observer = new Astronomy.Observer(lat, lon, 0);
+        const startTime = new Astronomy.AstroTime(new Date(startUtcMillis));
+        const limitDays = 2;
+
+        let rise = null;
+        let set = null;
+
+        try {
+          rise = Astronomy.SearchRiseSet(bodyName, observer, +1, startTime, limitDays);
+        } catch {}
+        try {
+          set = Astronomy.SearchRiseSet(bodyName, observer, -1, startTime, limitDays);
+        } catch {}
+
+        return { rise: toLocalTimeLabel(rise, tzName), set: toLocalTimeLabel(set, tzName) };
+      }
+
+      // ✅ Planets calc: label is DATE ONLY (no time, per request)
+      function computeVisiblePlanetsAt10pmLocal({ lat, lon, utcOffsetSeconds, dateISO, tzName }) {
+        if (!window.Astronomy) return null;
+
+        // 10:00 PM local -> UTC (using offset from Open-Meteo for that location)
+        const [Y, M, D] = dateISO.split("-").map((x) => parseInt(x, 10));
+        const localMillisAssumingUtc = Date.UTC(Y, M - 1, D, 22, 0, 0);
+        const utcMillis = localMillisAssumingUtc - utcOffsetSeconds * 1000;
+
+        const date = new Date(utcMillis);
+        const observer = new Astronomy.Observer(lat, lon, 0);
+
+        const bodies = ["Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"];
+
+        const results = bodies.map((name) => {
+          const eq = Astronomy.Equator(name, date, observer, true, true);
+          const hor = Astronomy.Horizon(date, observer, eq.ra, eq.dec, "normal");
+          const illum = Astronomy.Illumination(name, date);
+          const rs = computeBodyRiseSetForDate({
+            bodyName: name,
+            lat,
+            lon,
+            utcOffsetSeconds,
+            dateISO,
+            tzName,
+          });
+          return { name, altitude: hor.altitude, magnitude: illum?.mag ?? null, rise: rs.rise, set: rs.set };
+        });
+
+        const visible = results
+          .filter((p) => p.altitude > 0 && (p.magnitude === null || p.magnitude <= 6.0))
+          .sort((a, b) => b.altitude - a.altitude);
+
+        return { localLabel: `${formatDateLabel(dateISO)}`, visible };
+      }
+
+      // Chart.js plugin: draw vertical "now" line (dash only; no dot)
+      function makeNowLinePlugin(getIndexFn, getColorFn) {
+        return {
+          id: "nowLine",
+          afterDatasetsDraw(chart) {
+            const idx = getIndexFn?.();
+            if (idx === null || idx === undefined || idx < 0) return;
+            const { ctx, chartArea, scales } = chart;
+            const xScale = scales.x;
+            if (!xScale || !chartArea) return;
+
+            const x = xScale.getPixelForValue(idx);
+            if (!Number.isFinite(x)) return;
+
+            ctx.save();
+            ctx.strokeStyle = getColorFn?.() ?? "rgba(37,99,235,0.65)";
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 6]);
+            ctx.beginPath();
+            ctx.moveTo(x, chartArea.top);
+            ctx.lineTo(x, chartArea.bottom);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.restore();
+          },
+        };
+      }
+
+      function prettyTimezoneName(tzName) {
+        const map = [
+          { key: "Pacific", zones: ["America/Los_Angeles", "US/Pacific", "Canada/Pacific"] },
+          { key: "Mountain", zones: ["America/Denver", "US/Mountain", "Canada/Mountain", "America/Phoenix"] },
+          { key: "Central", zones: ["America/Chicago", "US/Central", "Canada/Central"] },
+          { key: "Eastern", zones: ["America/New_York", "US/Eastern", "Canada/Eastern"] },
+        ];
+        for (const m of map) {
+          if (m.zones.includes(tzName)) return m.key;
+        }
+        return tzName;
+      }
+
+      // local time string using utc_offset_seconds
+      function localTimeFromOffset(utcOffsetSeconds) {
+        const d = new Date(Date.now() + (Number(utcOffsetSeconds) || 0) * 1000);
+        try {
+          return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+        } catch {
+          return d.toISOString();
+        }
+      }
+
+      function WeatherApp() {
+        // Favorites selection (kept)
+        const [zip, setZip] = useState("84341");
+
+        // Active location: either a favorite ZIP, or a searched geo location
+        const [activeLocation, setActiveLocation] = useState({
+          mode: "zip", // "zip" | "geo"
+          zip: "84341",
+          label: ZIP_LABELS["84341"] ?? "84341",
+          lat: null,
+          lon: null,
+          city: null,
+          state: null,
+        });
+
+        const [loading, setLoading] = useState(true);
+        const [error, setError] = useState("");
+
+        const [place, setPlace] = useState(null);
+        const [data, setData] = useState(null);
+
+        const [lastUpdated, setLastUpdated] = useState(null);
+        const [selectedDate, setSelectedDate] = useState(null);
+
+        const [tzName, setTzName] = useState("auto");
+        const [utcOffsetSeconds, setUtcOffsetSeconds] = useState(0);
+
+        const [moon, setMoon] = useState(null);
+        const [moonRiseSet, setMoonRiseSet] = useState({ rise: "—", set: "—" });
+        const [planets10pm, setPlanets10pm] = useState(null);
+
+        const [bgMode, setBgMode] = useState("day");
+
+        // comparison: current vs other favorites
+        const [favoritesNow, setFavoritesNow] = useState({}); // zip -> {temp, humidity, tz, offset, localTime, label, city, state}
+
+        // Search pill state (NEW)
+        const [searchText, setSearchText] = useState("");
+        const [searchResults, setSearchResults] = useState([]);
+        const [searchLoading, setSearchLoading] = useState(false);
+        const [searchOpen, setSearchOpen] = useState(false);
+        const searchBoxRef = useRef(null);
+        const searchDebounceRef = useRef(null);
+
+        const chartCanvasRef = useRef(null);
+        const chartInstanceRef = useRef(null);
+        const [nowTick, setNowTick] = useState(0);
+
+        // ---------- Fetch helpers ----------
+        async function lookupZipToCoords(selectedZip) {
+          const zipRes = await fetch(`${ZIP_API}${selectedZip}`);
+          if (!zipRes.ok) throw new Error(`ZIP lookup failed (${zipRes.status}).`);
+          const zipJson = await zipRes.json();
+          const first = zipJson?.places?.[0];
+          const lat = Number(first?.latitude);
+          const lon = Number(first?.longitude);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) throw new Error("ZIP lookup returned invalid coordinates.");
+          return {
+            lat,
+            lon,
+            city: first["place name"],
+            state: first["state abbreviation"] ?? first?.state,
+          };
+        }
+
+        async function fetchOpenMeteo({ lat, lon }) {
+          const params = new URLSearchParams({
+            latitude: String(lat),
+            longitude: String(lon),
+            timezone: "auto",
+            temperature_unit: "fahrenheit",
+            precipitation_unit: "inch",
+            wind_speed_unit: "mph",
+            forecast_days: "10",
+            daily:
+              "temperature_2m_max,temperature_2m_min,relative_humidity_2m_max,precipitation_sum,precipitation_probability_max,windspeed_10m_max,winddirection_10m_dominant,weathercode,sunrise,sunset",
+            hourly: "temperature_2m,relative_humidity_2m,dew_point_2m",
+            current: "temperature_2m,relative_humidity_2m,wind_speed_10m",
+          });
+
+          const wxRes = await fetch(`https://api.open-meteo.com/v1/forecast?${params.toString()}`);
+          if (!wxRes.ok) throw new Error(`Weather fetch failed (${wxRes.status}).`);
+          return await wxRes.json();
+        }
+
+        async function fetchAllForLocation(loc) {
+          setLoading(true);
+          try {
+            let lat, lon, city, state, zipForPlace;
+
+            if (loc.mode === "zip") {
+              const z = loc.zip;
+              const out = await lookupZipToCoords(z);
+              lat = out.lat;
+              lon = out.lon;
+              city = out.city;
+              state = out.state;
+              zipForPlace = z;
+            } else {
+              lat = Number(loc.lat);
+              lon = Number(loc.lon);
+              city = loc.city ?? null;
+              state = loc.state ?? null;
+              zipForPlace = null;
+              if (!Number.isFinite(lat) || !Number.isFinite(lon)) throw new Error("Search location had invalid coordinates.");
+            }
+
+            const label = loc.label ?? (loc.mode === "zip" ? ZIP_LABELS[loc.zip] ?? loc.zip : "Search");
+
+            setPlace({
+              zip: zipForPlace ?? "",
+              city: city ?? "—",
+              state: state ?? "",
+              lat,
+              lon,
+              label,
+              mode: loc.mode,
+            });
+
+            const wx = await fetchOpenMeteo({ lat, lon });
+
+            setError("");
+            setData(wx);
+            setLastUpdated(new Date());
+
+            const tz = wx?.timezone ?? "auto";
+            const offset = Number(wx?.utc_offset_seconds ?? 0);
+            const safeOffset = Number.isFinite(offset) ? offset : 0;
+            setTzName(tz);
+            setUtcOffsetSeconds(safeOffset);
+
+            const firstDay = wx?.daily?.time?.[0] ?? null;
+            setSelectedDate(firstDay);
+
+            const sunrise0 = wx?.daily?.sunrise?.[0] ?? null;
+            const sunset0 = wx?.daily?.sunset?.[0] ?? null;
+            setBgMode(
+              computeBgMode({
+                nowUtcMillis: Date.now(),
+                sunriseLocalIso: sunrise0,
+                sunsetLocalIso: sunset0,
+                utcOffsetSeconds: safeOffset,
+              })
+            );
+
+            try {
+              setMoon(moonInfoAtUtc(new Date()));
+            } catch {
+              setMoon(null);
+            }
+
+            try {
+              if (firstDay) {
+                setPlanets10pm(
+                  computeVisiblePlanetsAt10pmLocal({
+                    lat,
+                    lon,
+                    utcOffsetSeconds: safeOffset,
+                    dateISO: firstDay,
+                    tzName: tz,
+                  })
+                );
+              } else {
+                setPlanets10pm(null);
+              }
+            } catch (e) {
+              console.warn("Planets calc failed", e);
+              setPlanets10pm({
+                localLabel: firstDay ? `${formatDateLabel(firstDay)}` : "",
+                visible: [],
+                error: "Planets calculation failed.",
+              });
+            }
+
+            try {
+              if (firstDay) {
+                setMoonRiseSet(
+                  computeMoonRiseSetForDate({
+                    lat,
+                    lon,
+                    utcOffsetSeconds: safeOffset,
+                    dateISO: firstDay,
+                    tzName: tz,
+                  }) ?? { rise: "—", set: "—" }
+                );
+              } else {
+                setMoonRiseSet({ rise: "—", set: "—" });
+              }
+            } catch {
+              setMoonRiseSet({ rise: "—", set: "—" });
+            }
+          } catch (e) {
+            console.error(e);
+            setError(e?.message ?? "Something went wrong.");
+          } finally {
+            setLoading(false);
+          }
+        }
+
+        // ---------- Search (Open-Meteo Geocoding) ----------
+        async function runSearch(query) {
+          const q = String(query ?? "").trim();
+          if (!q) {
+            setSearchResults([]);
+            setSearchLoading(false);
+            return;
+          }
+
+          // Always allow a "Use ZIP" action if 5 digits
+          const zipCandidate = isLikelyZip(q) ? [{ _type: "zip", zip: q }] : [];
+
+          // For pure zip, we can skip geocoding call (fast + reliable via Zippopotam)
+          if (isLikelyZip(q)) {
+            setSearchResults(zipCandidate);
+            setSearchLoading(false);
+            return;
+          }
+
+          try {
+            setSearchLoading(true);
+            const params = new URLSearchParams({
+              name: q,
+              count: "8",
+              language: "en",
+              format: "json",
+            });
+            const res = await fetch(`${GEO_API}?${params.toString()}`);
+            if (!res.ok) throw new Error(`Geocoding failed (${res.status}).`);
+            const json = await res.json();
+            const results = (json?.results ?? []).map((r) => ({
+              _type: "geo",
+              id: r.id,
+              name: r.name,
+              admin1: r.admin1,
+              country_code: r.country_code,
+              latitude: r.latitude,
+              longitude: r.longitude,
+            }));
+
+            setSearchResults([...zipCandidate, ...results]);
+          } catch (e) {
+            console.warn("Search error:", e);
+            setSearchResults(zipCandidate);
+          } finally {
+            setSearchLoading(false);
+          }
+        }
+
+        async function applySearchPick(pick) {
+          if (!pick) return;
+
+          if (pick._type === "zip") {
+            const z = String(pick.zip ?? "").trim();
+            if (!isLikelyZip(z)) return;
+
+            // Set favorites dropdown + active location to that zip
+            setZip(z);
+            setActiveLocation({
+              mode: "zip",
+              zip: z,
+              label: ZIP_LABELS[z] ?? z,
+              lat: null,
+              lon: null,
+              city: null,
+              state: null,
+            });
+            setSearchOpen(false);
+            return;
+          }
+
+          if (pick._type === "geo") {
+            const label = nicePlaceLabel(pick);
+            setActiveLocation({
+              mode: "geo",
+              zip: "",
+              label,
+              lat: Number(pick.latitude),
+              lon: Number(pick.longitude),
+              city: pick.name ?? null,
+              state: pick.admin1 ?? null,
+            });
+            setSearchText(label);
+            setSearchOpen(false);
+            return;
+          }
+        }
+
+        // Debounced search
+        useEffect(() => {
+          if (!searchOpen) return;
+
+          const q = String(searchText ?? "");
+          if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+
+          setSearchLoading(true);
+          searchDebounceRef.current = setTimeout(() => runSearch(q), 350);
+
+          return () => {
+            if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+          };
+        }, [searchText, searchOpen]);
+
+        // Close search on outside click (use click; avoid eating dropdown selection)
+        useEffect(() => {
+          function onDocClick(e) {
+            if (!searchBoxRef.current) return;
+            if (!searchBoxRef.current.contains(e.target)) setSearchOpen(false);
+          }
+          document.addEventListener("click", onDocClick);
+          return () => document.removeEventListener("click", onDocClick);
+        }, []);
+
+        // When favorites dropdown changes: switch to ZIP mode
+        useEffect(() => {
+          setActiveLocation({
+            mode: "zip",
+            zip,
+            label: ZIP_LABELS[zip] ?? zip,
+            lat: null,
+            lon: null,
+            city: null,
+            state: null,
+          });
+        }, [zip]);
+
+        // Fetch when active location changes
+        useEffect(() => {
+          fetchAllForLocation(activeLocation);
+        }, [activeLocation.mode, activeLocation.zip, activeLocation.lat, activeLocation.lon, activeLocation.label]);
+
+        // Refresh tick
+        useEffect(() => {
+          const id = setInterval(() => setNowTick((x) => x + 1), 60 * 1000);
+          return () => clearInterval(id);
+        }, []);
+
+        const derived = useMemo(() => {
+          if (!data) return null;
+
+          const daily = data?.daily;
+          const hourly = data?.hourly;
+
+          const todayHigh = daily?.temperature_2m_max?.[0];
+          const todayLow = daily?.temperature_2m_min?.[0];
+          const todayCode = daily?.weathercode?.[0];
+
+          const times = hourly?.time ?? [];
+          const hum = hourly?.relative_humidity_2m ?? [];
+          const dew = hourly?.dew_point_2m ?? [];
+          const temps = hourly?.temperature_2m ?? [];
+
+          let humidityHigh24 = null;
+          let dewPointLow24 = null;
+          if (times.length && hum.length && dew.length) {
+            const [s, e] = pick24hWindow(times);
+            const humSlice = hum.slice(s, e).map(Number).filter((v) => Number.isFinite(v));
+            const dewSlice = dew.slice(s, e).map(Number).filter((v) => Number.isFinite(v));
+            humidityHigh24 = humSlice.length ? Math.max(...humSlice) : null;
+            dewPointLow24 = dewSlice.length ? Math.min(...dewSlice) : null;
+          }
+
+          const tenDay = (daily?.time ?? []).slice(0, 10).map((t, i) => ({
+            date: t,
+            high: daily?.temperature_2m_max?.[i],
+            low: daily?.temperature_2m_min?.[i],
+            humidMax: daily?.relative_humidity_2m_max?.[i],
+            precipProb: daily?.precipitation_probability_max?.[i],
+            precip: daily?.precipitation_sum?.[i],
+            windMax: daily?.windspeed_10m_max?.[i],
+            windDir: daily?.winddirection_10m_dominant?.[i],
+            code: daily?.weathercode?.[i],
+            sunrise: daily?.sunrise?.[i],
+            sunset: daily?.sunset?.[i],
+          }));
+
+          const highs = tenDay.map((d) => Number(d.high)).filter((v) => Number.isFinite(v));
+          const lows = tenDay.map((d) => Number(d.low)).filter((v) => Number.isFinite(v));
+          const maxHigh = highs.length ? Math.max(...highs) : null;
+          const minLow = lows.length ? Math.min(...lows) : null;
+
+          let hourlyForDay = { date: selectedDate, isoTimes: [], labels: [], values: [] };
+          if (selectedDate && times.length && temps.length) {
+            const idxs = [];
+            for (let i = 0; i < times.length; i++) if (String(times[i]).startsWith(selectedDate)) idxs.push(i);
+            hourlyForDay = {
+              date: selectedDate,
+              isoTimes: idxs.map((i) => times[i]),
+              labels: idxs.map((i) => formatHourLabel(times[i])),
+              values: idxs.map((i) => (Number.isFinite(Number(temps[i])) ? Number(temps[i]) : null)),
+            };
+          }
+
+          const feelsLike = computeFeelsLikeF(
+            data?.current?.temperature_2m,
+            data?.current?.relative_humidity_2m,
+            data?.current?.wind_speed_10m
+          );
+
+          return {
+            todayHigh,
+            todayLow,
+            todayCode,
+            humidityHigh24,
+            dewPointLow24,
+            tenDay,
+            maxHigh,
+            minLow,
+            hourlyForDay,
+            currentTemp: data?.current?.temperature_2m,
+            currentHumidity: data?.current?.relative_humidity_2m,
+            currentWind: data?.current?.wind_speed_10m,
+            feelsLike,
+          };
+        }, [data, selectedDate]);
+
+        // background mode update
+        useEffect(() => {
+          if (!derived?.tenDay?.length) return;
+          setBgMode(
+            computeBgMode({
+              nowUtcMillis: Date.now(),
+              sunriseLocalIso: derived.tenDay[0].sunrise,
+              sunsetLocalIso: derived.tenDay[0].sunset,
+              utcOffsetSeconds,
+            })
+          );
+        }, [nowTick, utcOffsetSeconds, derived?.tenDay?.[0]?.sunrise, derived?.tenDay?.[0]?.sunset]);
+
+        // where to draw "now" line on chart (only when viewing today)
+        const nowIndex = useMemo(() => {
+          if (!derived?.hourlyForDay?.isoTimes?.length) return null;
+          const todayIso = derived?.tenDay?.[0]?.date;
+          if (!todayIso || derived.hourlyForDay.date !== todayIso) return null;
+
+          const nowUtc = Date.now();
+          let bestIdx = null;
+          let bestAbs = Infinity;
+          for (let i = 0; i < derived.hourlyForDay.isoTimes.length; i++) {
+            const utcMillis = localIsoToUtcMillis(derived.hourlyForDay.isoTimes[i], utcOffsetSeconds);
+            if (utcMillis == null) continue;
+            const abs = Math.abs(utcMillis - nowUtc);
+            if (abs < bestAbs) {
+              bestAbs = abs;
+              bestIdx = i;
+            }
+          }
+          return bestIdx;
+        }, [derived?.hourlyForDay?.date, derived?.hourlyForDay?.isoTimes?.length, utcOffsetSeconds, nowTick]);
+
+        // Prev/Next day controls for hourly chart
+        const canPrevNext = useMemo(() => {
+          const days = derived?.tenDay?.map((d) => d.date) ?? [];
+          const idx = days.indexOf(selectedDate);
+          return { days, idx };
+        }, [derived?.tenDay, selectedDate]);
+
+        function goPrevDay() {
+          const { days, idx } = canPrevNext;
+          if (idx > 0) setSelectedDate(days[idx - 1]);
+        }
+        function goNextDay() {
+          const { days, idx } = canPrevNext;
+          if (idx >= 0 && idx < days.length - 1) setSelectedDate(days[idx + 1]);
+        }
+
+        const isDarkUI = bgMode !== "day";
+        const bgClass =
+          bgMode === "night"
+            ? "bg-black text-white"
+            : bgMode === "twilight"
+            ? "bg-[#0B1B3A] text-white"
+            : "bg-[#CFE9FF] text-slate-900";
+        const cardBg = isDarkUI ? "bg-white/5 backdrop-blur" : "bg-white/80 backdrop-blur";
+        const borderSoft = isDarkUI ? "border-white/10" : "border-black/5";
+        const cardText = isDarkUI ? "text-slate-100" : "text-slate-900";
+        const subText = isDarkUI ? "text-slate-300" : "text-slate-600";
+
+        // Build/update hourly chart
+        const chartTitleDate = derived?.hourlyForDay?.date ? formatDateLabel(derived.hourlyForDay.date) : "—";
+
+        useEffect(() => {
+          if (!derived?.hourlyForDay?.labels?.length) return;
+          if (!chartCanvasRef.current) return;
+          if (!window.Chart) return;
+
+          if (chartInstanceRef.current) {
+            chartInstanceRef.current.destroy();
+            chartInstanceRef.current = null;
+          }
+
+          const axisColor = isDarkUI ? "rgba(226,232,240,0.85)" : "rgba(107,114,128,0.95)";
+          const gridColor = isDarkUI ? "rgba(226,232,240,0.10)" : "rgba(17,24,39,0.06)";
+          const titleColor = isDarkUI ? "rgba(226,232,240,0.95)" : "#111827";
+          const nowLineColor = isDarkUI ? "rgba(56,189,248,0.85)" : "rgba(37,99,235,0.65)";
+
+          const nowLinePlugin = makeNowLinePlugin(() => nowIndex, () => nowLineColor);
+
+          const ctx = chartCanvasRef.current.getContext("2d");
+          chartInstanceRef.current = new window.Chart(ctx, {
+            type: "line",
+            plugins: [nowLinePlugin],
+            data: {
+              labels: derived.hourlyForDay.labels,
+              datasets: [
+                {
+                  label: "Temperature (°F)",
+                  data: derived.hourlyForDay.values,
+                  tension: 0.28,
+                  pointRadius: 0,
+                  borderWidth: 2,
+                },
+              ],
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: { display: false },
+                title: {
+                  display: true,
+                  text: `Hourly temps — ${chartTitleDate}`,
+                  color: titleColor,
+                  padding: { top: 6, bottom: 10 },
+                  font: { size: 14, weight: "600" },
+                },
+                tooltip: {
+                  callbacks: {
+                    label: (ctx) => ` ${Math.round(ctx.parsed.y)}°F`,
+                  },
+                },
+              },
+              scales: {
+                x: { ticks: { color: axisColor, maxTicksLimit: 10 }, grid: { color: gridColor } },
+                y: { ticks: { color: axisColor }, grid: { color: gridColor } },
+              },
+            },
+          });
+
+          return () => {
+            if (chartInstanceRef.current) {
+              chartInstanceRef.current.destroy();
+              chartInstanceRef.current = null;
+            }
+          };
+        }, [
+          derived?.hourlyForDay?.date,
+          derived?.hourlyForDay?.labels?.join(","),
+          derived?.hourlyForDay?.values?.join(","),
+          nowIndex,
+          bgMode,
+          chartTitleDate,
+        ]);
+
+        // Favorites label (for dropdown selection)
+        const tzDisplay = prettyTimezoneName(tzName);
+
+        // ---------- Favorites comparison fetch ----------
+        async function refreshFavoritesNow() {
+          try {
+            const baseZipList = ZIP_OPTIONS.slice();
+
+            // fetch for each favorite zip: coords (zippopotam) + open-meteo current only
+            const tasks = baseZipList.map(async (z) => {
+              try {
+                const coords = await lookupZipToCoords(z);
+                const params = new URLSearchParams({
+                  latitude: String(coords.lat),
+                  longitude: String(coords.lon),
+                  timezone: "auto",
+                  temperature_unit: "fahrenheit",
+                  wind_speed_unit: "mph",
+                  current: "temperature_2m,relative_humidity_2m",
+                });
+                const res = await fetch(`https://api.open-meteo.com/v1/forecast?${params.toString()}`);
+                if (!res.ok) throw new Error("fav weather failed");
+                const wx = await res.json();
+                const off = Number(wx?.utc_offset_seconds ?? 0);
+                const safeOff = Number.isFinite(off) ? off : 0;
+                return [
+                  z,
+                  {
+                    zip: z,
+                    label: ZIP_LABELS[z] ?? z,
+                    city: coords.city,
+                    state: coords.state,
+                    temp: wx?.current?.temperature_2m ?? null,
+                    humidity: wx?.current?.relative_humidity_2m ?? null,
+                    tz: wx?.timezone ?? "auto",
+                    offset: safeOff,
+                    localTime: localTimeFromOffset(safeOff),
+                  },
+                ];
+              } catch {
+                return [
+                  z,
+                  {
+                    zip: z,
+                    label: ZIP_LABELS[z] ?? z,
+                    city: "—",
+                    state: "",
+                    temp: null,
+                    humidity: null,
+                    tz: "auto",
+                    offset: 0,
+                    localTime: "—",
+                  },
+                ];
+              }
+            });
+
+            const pairs = await Promise.all(tasks);
+            const next = {};
+            for (const [z, obj] of pairs) next[z] = obj;
+            setFavoritesNow(next);
+          } catch (e) {
+            console.warn("favorites compare failed", e);
+          }
+        }
+
+        // refresh favorites now when main location changes (and occasionally)
+        useEffect(() => {
+          refreshFavoritesNow();
+        }, [place?.lat, place?.lon]);
+
+        useEffect(() => {
+          const id = setInterval(() => refreshFavoritesNow(), 10 * 60 * 1000);
+          return () => clearInterval(id);
+        }, []);
+
+        // Comparison model vs current active location
+        const compareRows = useMemo(() => {
+          const baseTemp = derived?.currentTemp;
+          const baseHum = derived?.currentHumidity;
+          const baseOff = utcOffsetSeconds;
+
+          if (!favoritesNow || !Object.keys(favoritesNow).length) return [];
+
+          return ZIP_OPTIONS
+            .filter((z) => !(activeLocation.mode === "zip" && z === activeLocation.zip))
+            .map((z) => {
+              const other = favoritesNow[z];
+              const dt = Number(other?.temp) - Number(baseTemp);
+              const dh = Number(other?.humidity) - Number(baseHum);
+              const dmins = ((Number(other?.offset) || 0) - (Number(baseOff) || 0)) / 60;
+
+              const safeDt = Number.isFinite(dt) ? dt : null;
+              const safeDh = Number.isFinite(dh) ? dh : null;
+              const safeDmins = Number.isFinite(dmins) ? dmins : null;
+
+              return {
+                zip: z,
+                label: other?.label ?? z,
+                city: other?.city ?? "",
+                state: other?.state ?? "",
+                otherTemp: other?.temp ?? null,
+                otherHum: other?.humidity ?? null,
+                otherTime: other?.localTime ?? "—",
+                dTemp: safeDt,
+                dHum: safeDh,
+                dMins: safeDmins,
+              };
+            });
+        }, [favoritesNow, derived?.currentTemp, derived?.currentHumidity, utcOffsetSeconds, activeLocation]);
+
+        function diffClass(val) {
+          if (val === null || val === undefined || !Number.isFinite(Number(val))) return "";
+          return Number(val) < 0 ? "text-sky-500" : Number(val) > 0 ? "text-rose-500" : "";
+        }
+
+        function formatDiff(val, unit) {
+          if (val === null || val === undefined || !Number.isFinite(Number(val))) return "—";
+          const n = Number(val);
+          const sign = n > 0 ? "+" : n < 0 ? "−" : "";
+          const abs = Math.abs(n);
+          if (unit === "temp") return `${sign}${Math.round(abs)}°F`;
+          if (unit === "pct") return `${sign}${Math.round(abs)}%`;
+          if (unit === "time") {
+            const mins = Math.round(abs);
+            const h = Math.floor(mins / 60);
+            const m = mins % 60;
+            if (h === 0) return `${sign}${m}m`;
+            return `${sign}${h}h ${m}m`;
+          }
+          return `${sign}${abs}`;
+        }
+
+        const locationTitle =
+          activeLocation.mode === "geo"
+            ? (place?.label ?? "Search location")
+            : (ZIP_LABELS[zip] ?? zip);
+
+        return (
+          <div className={`${bgClass} min-h-screen transition-colors duration-700`}>
+            <div className="mx-auto max-w-6xl px-4 py-8">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <h1 className={`text-3xl font-semibold tracking-tight ${isDarkUI ? "text-white" : "text-slate-900"}`}>
+                    Dave&apos;s Weather Dash
+                  </h1>
+                  <div className={`mt-1 text-sm ${subText}`}>
+                    Timezone:{" "}
+                    <span className={`font-medium ${isDarkUI ? "text-slate-100" : "text-slate-800"}`}>{tzDisplay}</span>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Favorites */}
+                  <div
+                    className={`rounded-3xl border px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardBg} ${borderSoft}`}
+                  >
+                    <label className={`mr-2 text-xs font-semibold uppercase tracking-wide ${subText}`}>Favorites</label>
+                    <select
+                      className={`rounded-2xl px-3 py-2 text-sm outline-none ring-1 ${
+                        isDarkUI ? "bg-white/10 text-white ring-white/10" : "bg-slate-50 text-slate-900 ring-black/5"
+                      }`}
+                      value={zip}
+                      onChange={(e) => setZip(e.target.value)}
+                      disabled={loading}
+                      title="Choose a saved ZIP favorite"
+                    >
+                      {ZIP_OPTIONS.map((z) => (
+                        <option key={z} value={z}>
+                          {(ZIP_LABELS[z] ?? z) + " — " + z}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Search (NEW, replaces old) */}
+                  <div
+                    ref={searchBoxRef}
+                    className={`relative z-[80] rounded-3xl border px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardBg} ${borderSoft}`}
+                    style={{ minWidth: 310 }}
+                  >
+                    <label className={`mr-2 text-xs font-semibold uppercase tracking-wide ${subText}`}>Search</label>
+                    <input
+                      className={`rounded-2xl px-3 py-2 text-sm outline-none ring-1 w-[220px] sm:w-[240px] ${
+                        isDarkUI
+                          ? "bg-white/10 text-white ring-white/10 placeholder:text-slate-400"
+                          : "bg-slate-50 text-slate-900 ring-black/5 placeholder:text-slate-400"
+                      }`}
+                      placeholder="City, State or ZIP"
+                      value={searchText}
+                      onChange={(e) => {
+                        setSearchText(e.target.value);
+                        setSearchOpen(true);
+                      }}
+                      onFocus={() => setSearchOpen(true)}
+                      onKeyDown={async (e) => {
+                        if (e.key === "Enter") {
+                          const q = String(searchText ?? "").trim();
+                          if (isLikelyZip(q)) {
+                            await applySearchPick({ _type: "zip", zip: q });
+                          } else if (searchResults?.length) {
+                            await applySearchPick(searchResults[0]);
+                          }
+                        } else if (e.key === "Escape") {
+                          setSearchOpen(false);
+                        }
+                      }}
+                      disabled={loading}
+                    />
+
+                    {searchOpen ? (
+                      <div
+                        onMouseDown={(e) => e.preventDefault()}
+                        className={`absolute z-[90] left-0 right-0 mt-2 overflow-hidden rounded-3xl border shadow-[0_20px_50px_rgba(0,0,0,0.20)] ${
+                          isDarkUI ? "border-white/10 bg-black/80 backdrop-blur" : "border-black/5 bg-white/90 backdrop-blur"
+                        }`}
+                      >
+                        <div className={`px-4 py-3 text-xs ${subText}`}>
+                          {searchLoading
+                            ? "Searching…"
+                            : !String(searchText ?? "").trim()
+                            ? "Type a city/state or ZIP."
+                            : (searchResults?.length ?? 0) === 0
+                            ? "No matches."
+                            : "Select a location:"}
+                        </div>
+
+                        {(searchResults ?? []).slice(0, 8).map((r, idx) => {
+                          const label =
+                            r._type === "zip"
+                              ? `Use ZIP ${r.zip}`
+                              : nicePlaceLabel({ name: r.name, admin1: r.admin1, country_code: r.country_code });
+
+                          return (
+                            <button
+                              key={(r._type === "zip" ? "zip:" + r.zip : r.id ?? idx) + ":" + idx}
+                              className={`w-full text-left px-4 py-3 text-sm hover:opacity-90 ${
+                                isDarkUI ? "text-slate-100 hover:bg-white/10" : "text-slate-900 hover:bg-black/5"
+                              }`}
+                              onClick={async () => {
+                                await applySearchPick(r);
+                              }}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="truncate">
+                                  <span className="font-semibold">{label}</span>
+                                  {r._type === "geo" ? (
+                                    <span className={`ml-2 text-xs ${subText}`}>
+                                      {Number(r.latitude).toFixed(2)}, {Number(r.longitude).toFixed(2)}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div className={`text-xs ${subText}`}>{r._type === "zip" ? "ZIP" : "City"}</div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {/* Refresh */}
+                  <button
+                    onClick={() => fetchAllForLocation(activeLocation)}
+                    className={`rounded-2xl px-4 py-3 text-sm font-semibold shadow hover:opacity-90 active:scale-[0.99] disabled:opacity-60 ${
+                      isDarkUI ? "bg-white text-black" : "bg-black text-white"
+                    }`}
+                    disabled={loading}
+                  >
+                    {loading ? "Refreshing…" : "Refresh"}
+                  </button>
+
+                  <div className={`text-xs ${subText}`}>
+                    {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : ""}
+                  </div>
+                </div>
+              </div>
+
+              {error ? (
+                <div
+                  className={`mt-6 rounded-3xl border p-4 text-sm ${
+                    isDarkUI ? "border-red-400/30 bg-red-500/10 text-red-100" : "border-red-200 bg-red-50 text-red-800"
+                  }`}
+                >
+                  <div className="font-semibold">Error</div>
+                  <div className="mt-1">{error}</div>
+                </div>
+              ) : null}
+
+              <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
+                {/* LEFT */}
+                <div className={`rounded-3xl border p-6 ${cardBg} ${borderSoft} shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardText}`}>
+                  <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Location</div>
+                  <div className="mt-2 text-lg font-semibold">
+                    {locationTitle}
+                    <span className={`${isDarkUI ? "text-slate-300" : "text-slate-500"} font-normal`}> • </span>
+                    {place ? `${place.city}, ${place.state}${activeLocation.mode === "zip" && place.zip ? ` (${place.zip})` : ""}` : "Loading…"}
+                  </div>
+
+                  <div className="mt-5 grid grid-cols-3 gap-3">
+                    <div className={`rounded-2xl p-4 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                      <div className={`text-xs ${subText}`}>Current</div>
+                      <div className="mt-1 text-2xl font-semibold">{derived ? formatTemp(derived.currentTemp) : "—"}</div>
+                      <div className={`mt-1 text-xs ${subText}`}>
+                        Feels Like: <span className="font-medium">{derived ? formatTemp(derived.feelsLike) : "—"}</span>
+                      </div>
+                    </div>
+
+                    <div className={`rounded-2xl p-4 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                      <div className={`text-xs ${subText}`}>Humidity</div>
+                      <div className="mt-1 text-2xl font-semibold">{derived ? formatPct(derived.currentHumidity) : "—"}</div>
+                    </div>
+
+                    <div className={`rounded-2xl p-4 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                      <div className={`text-xs ${subText}`}>Wind</div>
+                      <div className="mt-1 text-2xl font-semibold">{derived ? formatMph(derived.currentWind) : "—"}</div>
+                    </div>
+                  </div>
+
+                  {/* Today hi/lo */}
+                  <div className={`mt-4 rounded-2xl p-4 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className={`text-xs ${subText}`}>Today</div>
+                        <div className={`mt-1 text-sm ${subText}`}>{derived ? weatherLabel(derived.todayCode) : "—"}</div>
+                      </div>
+                      <div className="text-3xl">{derived ? weatherIcon(derived.todayCode) : "—"}</div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white ring-black/5"}`}>
+                        <div className={`text-xs ${subText}`}>High</div>
+                        <div className="mt-1 text-xl font-semibold">{derived ? formatTemp(derived.todayHigh) : "—"}</div>
+                      </div>
+                      <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white ring-black/5"}`}>
+                        <div className={`text-xs ${subText}`}>Low</div>
+                        <div className="mt-1 text-xl font-semibold">{derived ? formatTemp(derived.todayLow) : "—"}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Next 24 hours */}
+                  <div className={`mt-4 rounded-2xl p-4 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                    <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Next 24 hours</div>
+                    <div className={`mt-1 text-sm ${subText}`}>Humidity high • Dew point low</div>
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white ring-black/5"}`}>
+                        <div className={`text-xs ${subText}`}>Humidity (High)</div>
+                        <div className="mt-1 text-xl font-semibold">{derived ? formatPct(derived.humidityHigh24) : "—"}</div>
+                      </div>
+                      <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white ring-black/5"}`}>
+                        <div className={`text-xs ${subText}`}>Dew Point (Low)</div>
+                        <div className="mt-1 text-xl font-semibold">{derived ? formatTemp(derived.dewPointLow24) : "—"}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* MIDDLE */}
+                <div className={`rounded-3xl border p-6 ${cardBg} ${borderSoft} shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardText}`}>
+                  <div className="flex items-end justify-between">
+                    <div>
+                      <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Hourly temperature</div>
+                      <div className={`mt-1 text-sm ${subText}`}>Click a date in the 10-day forecast</div>
+                    </div>
+                    <div className={`text-xs ${subText}`}>{selectedDate ? formatDateLabel(selectedDate) : ""}</div>
+                  </div>
+
+                  <div className={`mt-4 relative h-[320px] rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-black/20 ring-white/10" : "bg-white ring-black/5"}`}>
+                    {/* Left/right day nav buttons */}
+                    <button
+                      onClick={goPrevDay}
+                      disabled={canPrevNext.idx <= 0}
+                      title="Previous day"
+                      className={`absolute left-2 top-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-xs shadow ${
+                        isDarkUI ? "bg-white/10 text-white hover:bg-white/15 disabled:opacity-30" : "bg-black/5 text-slate-900 hover:bg-black/10 disabled:opacity-30"
+                      }`}
+                    >
+                      ‹
+                    </button>
+
+                    <button
+                      onClick={goNextDay}
+                      disabled={canPrevNext.idx < 0 || canPrevNext.idx >= canPrevNext.days.length - 1}
+                      title="Next day"
+                      className={`absolute right-2 top-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-xs shadow ${
+                        isDarkUI ? "bg-white/10 text-white hover:bg-white/15 disabled:opacity-30" : "bg-black/5 text-slate-900 hover:bg-black/10 disabled:opacity-30"
+                      }`}
+                    >
+                      ›
+                    </button>
+
+                    <canvas ref={chartCanvasRef}></canvas>
+                    {!derived?.hourlyForDay?.labels?.length ? (
+                      <div className={`mt-3 text-center text-sm ${subText}`}>No hourly data for selected date.</div>
+                    ) : null}
+                  </div>
+                </div>
+
+                {/* RIGHT */}
+                <div className="grid grid-cols-1 gap-4">
+                  <div className={`rounded-3xl border p-6 ${cardBg} ${borderSoft} shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardText}`}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Moon</div>
+                        <div className="mt-1 text-lg font-semibold">{moon ? moon.name : "—"}</div>
+                        <div className={`mt-1 text-sm ${subText}`}>{moon ? `Illumination: ${Math.round(moon.illumination * 100)}%` : ""}</div>
+                      </div>
+                      <div className="text-5xl" aria-label="Moon phase">{moon ? moon.icon : "🌙"}</div>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-2 gap-3">
+                      <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                        <div className={`text-xs ${subText}`}>Moonrise</div>
+                        <div className="mt-1 text-sm font-semibold">{moonRiseSet?.rise ?? "—"}</div>
+                      </div>
+                      <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                        <div className={`text-xs ${subText}`}>Moonset</div>
+                        <div className="mt-1 text-sm font-semibold">{moonRiseSet?.set ?? "—"}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className={`rounded-3xl border p-6 ${cardBg} ${borderSoft} shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardText}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Planets visible</div>
+                        <div className={`mt-1 text-sm ${subText}`}>At 10:00 PM local time</div>
+                      </div>
+                      <div className={`text-xs ${subText} text-right`}>{planets10pm?.localLabel ?? ""}</div>
+                    </div>
+
+                    {!planets10pm ? (
+                      <div className={`mt-4 text-sm ${subText}`}>Calculating planets…</div>
+                    ) : planets10pm?.error ? (
+                      <div className={`mt-4 text-sm ${subText}`}>{planets10pm.error}</div>
+                    ) : (planets10pm.visible?.length ?? 0) === 0 ? (
+                      <div className={`mt-4 text-sm ${subText}`}>No planets are above the horizon at 10:00 PM local time.</div>
+                    ) : (
+                      <div className="mt-4 flex flex-col gap-2">
+                        {planets10pm.visible.map((p) => (
+                          <div
+                            key={p.name}
+                            className={`flex items-center justify-between gap-3 rounded-2xl px-3 py-2 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}
+                            title={`${p.name} • Alt ${p.altitude.toFixed(1)}° • Mag ${p.magnitude === null ? "—" : p.magnitude.toFixed(1)}`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="text-2xl" aria-label={`${p.name} icon`}>{planetIcon(p.name)}</div>
+                              <div>
+                                <div className="text-sm font-semibold">{p.name}</div>
+                                <div className={`text-xs ${subText}`}>
+                                  Rise:{" "}
+                                  <span className={`font-medium ${isDarkUI ? "text-slate-200" : "text-slate-700"}`}>{p.rise ?? "—"}</span>
+                                  <span className="mx-1">•</span>
+                                  Set:{" "}
+                                  <span className={`font-medium ${isDarkUI ? "text-slate-200" : "text-slate-700"}`}>{p.set ?? "—"}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className={`text-xs ${subText} text-right`}>Alt {p.altitude.toFixed(0)}°</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* 10-day forecast */}
+              <div className={`mt-6 rounded-3xl border p-6 ${cardBg} ${borderSoft} shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardText}`}>
+                <div className="flex items-end justify-between">
+                  <div>
+                    <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>10-day forecast</div>
+                    <div className={`mt-1 text-sm ${subText}`}>High • Low • Humidity • PoP • Precip • Wind (max)</div>
+                  </div>
+                  <div className={`text-xs ${subText}`}>Tip: click a row</div>
+                </div>
+
+                <div className="mt-4 overflow-x-auto">
+                  <table className="w-full min-w-[1240px] border-separate border-spacing-y-2">
+                    <thead>
+                      <tr className={`text-left text-xs ${subText}`}>
+                        <th className="px-3 py-2">Day</th>
+                        <th className="px-3 py-2">Icon</th>
+                        <th className="px-3 py-2">Summary</th>
+                        <th className="px-3 py-2">High</th>
+                        <th className="px-3 py-2">Low</th>
+                        <th className="px-3 py-2">Humidity</th>
+                        <th className="px-3 py-2">PoP</th>
+                        <th className="px-3 py-2">Precip</th>
+                        <th className="px-3 py-2">Wind</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(derived?.tenDay ?? []).map((d) => {
+                        const isSelected = d.date === selectedDate;
+
+                        const isMaxHigh =
+                          derived?.maxHigh !== null &&
+                          Number.isFinite(Number(d.high)) &&
+                          Number(d.high) === Number(derived.maxHigh);
+
+                        const isMinLow =
+                          derived?.minLow !== null &&
+                          Number.isFinite(Number(d.low)) &&
+                          Number(d.low) === Number(derived.minLow);
+
+                        const highlightClass =
+                          isMaxHigh && isMinLow
+                            ? isDarkUI
+                              ? "bg-purple-500/15 ring-purple-300/30"
+                              : "bg-purple-50 ring-purple-200"
+                            : isMaxHigh
+                            ? isDarkUI
+                              ? "bg-rose-500/15 ring-rose-300/30"
+                              : "bg-rose-50 ring-rose-200"
+                            : isMinLow
+                            ? isDarkUI
+                              ? "bg-sky-500/15 ring-sky-300/30"
+                              : "bg-sky-50 ring-sky-200"
+                            : isDarkUI
+                            ? "bg-white/5 ring-white/10"
+                            : "bg-slate-50 ring-black/5";
+
+                        const selectedRing = isSelected
+                          ? isDarkUI
+                            ? "ring-2 ring-white/25"
+                            : "ring-2 ring-black/10"
+                          : "ring-1";
+
+                        return (
+                          <tr
+                            key={d.date}
+                            className={`cursor-pointer rounded-2xl ${highlightClass} ${selectedRing}`}
+                            onClick={() => setSelectedDate(d.date)}
+                            title="Click to show hourly temps for this date"
+                          >
+                            <td className="px-3 py-3 text-sm font-semibold">{formatDateLabel(d.date)}</td>
+                            <td className="px-3 py-3 text-xl">
+                              {weatherIcon(d.code)}{" "}
+                              {isMaxHigh ? <span title="Highest high">🔥</span> : null}
+                              {isMinLow ? (
+                                <span title="Lowest low" className="ml-1">
+                                  ❄️
+                                </span>
+                              ) : null}
+                            </td>
+                            <td className={`px-3 py-3 text-sm ${isDarkUI ? "text-slate-200" : "text-slate-700"}`}>
+                              {weatherLabel(d.code)}
+                            </td>
+                            <td className="px-3 py-3 text-sm font-semibold">{formatTemp(d.high)}</td>
+                            <td className="px-3 py-3 text-sm font-semibold">{formatTemp(d.low)}</td>
+                            <td className="px-3 py-3 text-sm">{formatPct(d.humidMax)}</td>
+                            <td className="px-3 py-3 text-sm">{formatPct(d.precipProb)}</td>
+                            <td className="px-3 py-3 text-sm">{formatInches(d.precip)}</td>
+                            <td className="px-3 py-3 text-sm">{formatMph(d.windMax)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Comparison section */}
+              <div className={`mt-4 rounded-3xl border p-6 ${cardBg} ${borderSoft} shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardText}`}>
+                <div className="flex items-end justify-between">
+                  <div>
+                    <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Favorites comparison</div>
+                    <div className={`mt-1 text-sm ${subText}`}>
+                      Differences vs current location (temp / humidity / local time)
+                    </div>
+                  </div>
+                  <div className={`text-xs ${subText}`}>Blue = lower/earlier • Red = higher/later</div>
+                </div>
+
+                <div className="mt-4 overflow-x-auto">
+                  <table className="w-full min-w-[920px] border-separate border-spacing-y-2">
+                    <thead>
+                      <tr className={`text-left text-xs ${subText}`}>
+                        <th className="px-3 py-2">Favorite</th>
+                        <th className="px-3 py-2">Now</th>
+                        <th className="px-3 py-2">Δ Temp</th>
+                        <th className="px-3 py-2">Humidity</th>
+                        <th className="px-3 py-2">Δ Humidity</th>
+                        <th className="px-3 py-2">Local time</th>
+                        <th className="px-3 py-2">Δ Time</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(compareRows ?? []).map((r) => {
+                        return (
+                          <tr
+                            key={r.zip}
+                            className={`rounded-2xl ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}
+                          >
+                            <td className="px-3 py-3 text-sm font-semibold">
+                              {r.label}{" "}
+                              <span className={`ml-2 text-xs ${subText}`}>
+                                {r.city}{r.state ? `, ${r.state}` : ""} ({r.zip})
+                              </span>
+                            </td>
+                            <td className="px-3 py-3 text-sm font-semibold">{formatTemp(r.otherTemp)}</td>
+                            <td className={`px-3 py-3 text-sm font-semibold ${diffClass(r.dTemp)}`}>
+                              {formatDiff(r.dTemp, "temp")}
+                            </td>
+                            <td className="px-3 py-3 text-sm">{formatPct(r.otherHum)}</td>
+                            <td className={`px-3 py-3 text-sm font-semibold ${diffClass(r.dHum)}`}>
+                              {formatDiff(r.dHum, "pct")}
+                            </td>
+                            <td className="px-3 py-3 text-sm font-semibold">{r.otherTime ?? "—"}</td>
+                            <td className={`px-3 py-3 text-sm font-semibold ${diffClass(r.dMins)}`}>
+                              {formatDiff(r.dMins, "time")}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {(compareRows?.length ?? 0) === 0 ? (
+                        <tr>
+                          <td className={`px-3 py-4 text-sm ${subText}`} colSpan={7}>
+                            Comparison will appear after current conditions load.
+                          </td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Local server tip (hidden, kept for reference) */}
+              <div className="hidden">
+                If this doesn’t load when opened as file://, run:
+                <div>python3 -m http.server 8000</div>
+                Then open: http://localhost:8000/weather.html
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<WeatherApp />);
+    </script>
+  </body>
+</html>
