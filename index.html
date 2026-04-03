@@ -766,6 +766,7 @@
 
         const [lastUpdated, setLastUpdated] = useState(null);
         const [selectedDate, setSelectedDate] = useState(null);
+        const [mobileForecastCompact, setMobileForecastCompact] = useState(false);
 
         const [tzName, setTzName] = useState("auto");
         const [utcOffsetSeconds, setUtcOffsetSeconds] = useState(0);
@@ -2148,8 +2149,89 @@
                   <div className={`hidden sm:block text-xs ${subText}`}>Tip: click a row • swipe on mobile</div>
                 </div>
 
+                <div className="mt-4 flex sm:hidden">
+                  <div className={`inline-flex rounded-2xl p-1 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-100 ring-black/5"}`}>
+                    <button
+                      type="button"
+                      onClick={() => setMobileForecastCompact(false)}
+                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
+                        !mobileForecastCompact
+                          ? isDarkUI
+                            ? "bg-white text-black"
+                            : "bg-white text-slate-900 shadow"
+                          : subText
+                      }`}
+                    >
+                      Detailed
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMobileForecastCompact(true)}
+                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
+                        mobileForecastCompact
+                          ? isDarkUI
+                            ? "bg-white text-black"
+                            : "bg-white text-slate-900 shadow"
+                          : subText
+                      }`}
+                    >
+                      Compact
+                    </button>
+                  </div>
+                </div>
+
                 <div className="mt-4 space-y-3 sm:hidden">
-                  {(derived?.tenDay ?? []).map((d) => {
+                  {mobileForecastCompact ? (
+                    <div className={`overflow-hidden rounded-3xl ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                      {(derived?.tenDay ?? []).map((d, idx) => {
+                        const isSelected = d.date === selectedDate;
+                        const minLow = Number(derived?.minLow);
+                        const maxHigh = Number(derived?.maxHigh);
+                        const low = Number(d.low);
+                        const high = Number(d.high);
+                        const span = Math.max(1, maxHigh - minLow);
+                        const startPct = Number.isFinite(low) ? ((low - minLow) / span) * 100 : 0;
+                        const widthPct = Number.isFinite(low) && Number.isFinite(high) ? (Math.max(1, high - low) / span) * 100 : 18;
+                        const showRain = Number(d.precipProb) >= 20;
+
+                        return (
+                          <button
+                            key={d.date}
+                            type="button"
+                            onClick={() => setSelectedDate(d.date)}
+                            className={`flex w-full items-center gap-3 px-4 py-3 text-left ${
+                              idx > 0 ? (isDarkUI ? "border-t border-white/10" : "border-t border-black/5") : ""
+                            } ${isSelected ? (isDarkUI ? "bg-white/10" : "bg-white/80") : ""}`}
+                            title="Tap to show hourly temps for this date"
+                          >
+                            <div className="w-12 shrink-0 text-xl font-semibold">{idx === 0 ? "Today" : formatWeekdayLabel(d.date)}</div>
+                            <div className="relative w-10 shrink-0 text-center text-3xl leading-none">
+                              {weatherIcon(d.code)}
+                              {showRain ? (
+                                <div className="mt-0.5 text-[11px] font-semibold leading-none text-sky-500">{formatPct(d.precipProb)}</div>
+                              ) : null}
+                            </div>
+                            <div className={`w-12 shrink-0 text-right text-2xl ${subText}`}>{formatTemp(d.low)}</div>
+                            <div className="flex-1 px-1">
+                              <div className={`relative h-2 rounded-full ${isDarkUI ? "bg-white/10" : "bg-slate-200"}`}>
+                                <div
+                                  className="absolute top-0 h-2 rounded-full bg-gradient-to-r from-sky-300 via-cyan-200 to-amber-300"
+                                  style={{
+                                    left: `${Math.max(0, Math.min(100, startPct))}%`,
+                                    width: `${Math.max(8, Math.min(100 - startPct, widthPct))}%`,
+                                  }}
+                                ></div>
+                              </div>
+                            </div>
+                            <div className="w-12 shrink-0 text-right text-2xl font-semibold">{formatTemp(d.high)}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+
+                  {!mobileForecastCompact
+                    ? (derived?.tenDay ?? []).map((d) => {
                     const isSelected = d.date === selectedDate;
 
                     const isMaxHigh =
@@ -2238,7 +2320,8 @@
                         </div>
                       </button>
                     );
-                  })}
+                  })
+                    : null}
                 </div>
 
                 <div className="hidden sm:block">
