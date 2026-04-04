@@ -568,16 +568,6 @@
         return { score, label, detail };
       }
 
-      function ScrollHint({ isDarkUI, text = "Swipe to scroll" }) {
-        return (
-          <div className={`mt-2 flex items-center justify-end gap-2 text-[11px] font-medium ${isDarkUI ? "text-slate-300/90" : "text-slate-500"}`}>
-            <span aria-hidden="true">←</span>
-            <span>{text}</span>
-            <span aria-hidden="true">→</span>
-          </div>
-        );
-      }
-
       function HourlyLineChart({
         title,
         labels,
@@ -766,7 +756,8 @@
 
         const [lastUpdated, setLastUpdated] = useState(null);
         const [selectedDate, setSelectedDate] = useState(null);
-        const [mobileForecastCompact, setMobileForecastCompact] = useState(false);
+        const [mobileForecastCompact, setMobileForecastCompact] = useState(true);
+        const [mobileComparisonCompact, setMobileComparisonCompact] = useState(true);
 
         const [tzName, setTzName] = useState("auto");
         const [utcOffsetSeconds, setUtcOffsetSeconds] = useState(0);
@@ -1799,7 +1790,7 @@
 
               <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
                 {/* LEFT */}
-                <div className={`rounded-3xl border p-6 ${cardBg} ${borderSoft} shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardText}`}>
+                <div className={`hidden rounded-3xl border p-6 lg:block ${cardBg} ${borderSoft} shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardText}`}>
                   <div className="flex items-start justify-between gap-3">
                     <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 text-sm font-semibold tracking-wide ${subText}`}>
                       <span>Location</span>
@@ -2185,24 +2176,11 @@
                     <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>10-day forecast</div>
                     <div className={`mt-1 text-sm ${subText}`}>High • Low • Humidity • PoP • Precip • Wind (max)</div>
                   </div>
-                  <div className={`hidden sm:block text-xs ${subText}`}>Tip: click a row • swipe on mobile</div>
+                  <div className={`hidden sm:block text-xs ${subText}`}>Tip: click a row</div>
                 </div>
 
                 <div className="mt-4 flex sm:hidden">
                   <div className={`inline-flex rounded-2xl p-1 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-100 ring-black/5"}`}>
-                    <button
-                      type="button"
-                      onClick={() => setMobileForecastCompact(false)}
-                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
-                        !mobileForecastCompact
-                          ? isDarkUI
-                            ? "bg-white text-black"
-                            : "bg-white text-slate-900 shadow"
-                          : subText
-                      }`}
-                    >
-                      Detailed
-                    </button>
                     <button
                       type="button"
                       onClick={() => setMobileForecastCompact(true)}
@@ -2215,6 +2193,19 @@
                       }`}
                     >
                       Compact
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMobileForecastCompact(false)}
+                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
+                        !mobileForecastCompact
+                          ? isDarkUI
+                            ? "bg-white text-black"
+                            : "bg-white text-slate-900 shadow"
+                          : subText
+                      }`}
+                    >
+                      Detailed
                     </button>
                   </div>
                 </div>
@@ -2363,9 +2354,6 @@
                     : null}
                 </div>
 
-                <div className="hidden sm:block">
-                  <ScrollHint isDarkUI={isDarkUI} text="Swipe forecast table" />
-                </div>
                 <div className="mt-2 hidden overflow-x-auto pb-2 sm:block">
                   <table className="w-full min-w-[1240px] border-separate border-spacing-y-2">
                     <thead>
@@ -2480,8 +2468,111 @@
                   <div className={`text-xs ${subText}`}>Blue = lower/earlier • Red = higher/later</div>
                 </div>
 
-                <ScrollHint isDarkUI={isDarkUI} text="Swipe comparison table" />
-                <div className="mt-2 overflow-x-auto pb-2">
+                <div className="mt-4 flex sm:hidden">
+                  <div className={`inline-flex rounded-2xl p-1 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-100 ring-black/5"}`}>
+                    <button
+                      type="button"
+                      onClick={() => setMobileComparisonCompact(true)}
+                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
+                        mobileComparisonCompact
+                          ? isDarkUI
+                            ? "bg-white text-black"
+                            : "bg-white text-slate-900 shadow"
+                          : subText
+                      }`}
+                    >
+                      Compact
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMobileComparisonCompact(false)}
+                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
+                        !mobileComparisonCompact
+                          ? isDarkUI
+                            ? "bg-white text-black"
+                            : "bg-white text-slate-900 shadow"
+                          : subText
+                      }`}
+                    >
+                      Detailed
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-3 sm:hidden">
+                  {(compareRows?.length ?? 0) === 0 ? (
+                    <div className={`rounded-3xl px-4 py-4 text-sm ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"} ${subText}`}>
+                      {comparisonEmptyMessage}
+                    </div>
+                  ) : mobileComparisonCompact ? (
+                    <div className={`overflow-hidden rounded-3xl ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                      {(compareRows ?? []).map((r, idx) => (
+                        <div
+                          key={r.key}
+                          className={`px-4 py-3 ${idx > 0 ? (isDarkUI ? "border-t border-white/10" : "border-t border-black/5") : ""}`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-semibold">{r.label}</div>
+                              <div className={`mt-0.5 truncate text-xs ${subText}`}>
+                                {r.city}{r.state ? `, ${r.state}` : ""}{r.zip ? ` (${r.zip})` : ""}
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-sm font-semibold">{formatTemp(r.otherTemp)}</div>
+                              <div className={`text-xs font-semibold ${diffClass(r.dTemp)}`}>{formatDiff(r.dTemp, "temp")}</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    (compareRows ?? []).map((r) => (
+                      <div
+                        key={r.key}
+                        className={`rounded-3xl p-4 shadow-[0_10px_30px_rgba(0,0,0,0.08)] ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-base font-semibold">{r.label}</div>
+                            <div className={`mt-1 text-sm ${subText}`}>
+                              {r.city}{r.state ? `, ${r.state}` : ""}{r.zip ? ` (${r.zip})` : ""}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-lg font-semibold">{formatTemp(r.otherTemp)}</div>
+                            <div className={`text-xs ${subText}`}>Now</div>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3">
+                          <div>
+                            <div className={`text-[11px] font-semibold uppercase tracking-wide ${subText}`}>Delta Temp</div>
+                            <div className={`mt-1 text-base font-semibold ${diffClass(r.dTemp)}`}>{formatDiff(r.dTemp, "temp")}</div>
+                          </div>
+                          <div>
+                            <div className={`text-[11px] font-semibold uppercase tracking-wide ${subText}`}>Humidity</div>
+                            <div className="mt-1 text-base font-semibold">{formatPct(r.otherHum)}</div>
+                          </div>
+                          <div>
+                            <div className={`text-[11px] font-semibold uppercase tracking-wide ${subText}`}>Delta Humidity</div>
+                            <div className={`mt-1 text-base font-semibold ${diffClass(r.dHum)}`}>{formatDiff(r.dHum, "pct")}</div>
+                          </div>
+                          <div>
+                            <div className={`text-[11px] font-semibold uppercase tracking-wide ${subText}`}>Local time</div>
+                            <div className="mt-1 text-base font-semibold">{r.otherTime ?? "—"}</div>
+                          </div>
+                        </div>
+
+                        <div className={`mt-4 text-sm ${subText}`}>
+                          Delta time <span className={`ml-1 font-semibold ${diffClass(r.dMins)}`}>{formatDiff(r.dMins, "time")}</span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="mt-2 hidden overflow-x-auto pb-2 sm:block">
                   <table className="w-full min-w-[920px] border-separate border-spacing-y-2">
                     <thead>
                       <tr className={`text-left text-xs ${subText}`}>
@@ -2532,6 +2623,148 @@
                     </tbody>
                   </table>
                 </div>
+              </div>
+
+              <div className={`mt-4 rounded-3xl border p-6 lg:hidden ${cardBg} ${borderSoft} shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardText}`}>
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className={`text-sm font-semibold tracking-wide ${subText}`}>Astronomy</div>
+                    <div className="mt-1 text-lg font-semibold">{moon ? moon.name : "—"}</div>
+                    <div className={`mt-1 text-sm ${subText}`}>{moon ? `Moon illumination: ${Math.round(moon.illumination * 100)}%` : ""}</div>
+                  </div>
+                  <div className="text-5xl" aria-label="Moon phase">{moon ? moon.icon : "🌙"}</div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                  <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                    <div className={`text-xs ${subText}`}>Sunrise</div>
+                    <div className="mt-1 text-sm font-semibold">{formatLocalIsoTime(derived?.selectedDayData?.sunrise)}</div>
+                  </div>
+                  <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                    <div className={`text-xs ${subText}`}>Sunset</div>
+                    <div className="mt-1 text-sm font-semibold">{formatLocalIsoTime(derived?.selectedDayData?.sunset)}</div>
+                  </div>
+                  <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                    <div className={`text-xs ${subText}`}>Moonrise</div>
+                    <div className="mt-1 text-sm font-semibold">{moonRiseSet?.rise ?? "—"}</div>
+                  </div>
+                  <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                    <div className={`text-xs ${subText}`}>Moonset</div>
+                    <div className="mt-1 text-sm font-semibold">{moonRiseSet?.set ?? "—"}</div>
+                  </div>
+                </div>
+
+                <div className={`mt-4 rounded-2xl p-4 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Sun path</div>
+                      <div className={`mt-1 text-sm ${subText}`}>{sunArc?.status ?? "Sun position unavailable"}</div>
+                    </div>
+                    <div className="text-2xl" aria-hidden="true">☀️</div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white ring-black/5"}`}>
+                      <div className={`text-xs ${subText}`}>Daylight</div>
+                      <div className="mt-1 text-sm font-semibold">{formatDurationMs(derived?.daylightDuration)}</div>
+                    </div>
+                    <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white ring-black/5"}`}>
+                      <div className={`text-xs ${subText}`}>Selected Day</div>
+                      <div className="mt-1 text-sm font-semibold">{selectedDate ? formatDateLabel(selectedDate) : "—"}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 relative h-20 overflow-hidden">
+                    <div className={`absolute bottom-0 left-0 right-0 h-px ${isDarkUI ? "bg-white/20" : "bg-slate-300"}`}></div>
+                    <div className={`absolute bottom-0 left-1/2 h-14 w-[1px] -translate-x-1/2 ${isDarkUI ? "bg-white/10" : "bg-slate-300/70"}`}></div>
+                    <div className={`absolute bottom-0 left-[8%] right-[8%] h-20 rounded-t-full border-x border-t ${isDarkUI ? "border-white/15" : "border-slate-300"}`}></div>
+                    <div
+                      className="absolute text-xl transition-all duration-700"
+                      style={{
+                        left: `calc(8% + ${(sunArc?.progress ?? 0) * 84}%)`,
+                        bottom: `${sunArc?.isDaylight ? sunArc?.arcHeightPx ?? 0 : 0}px`,
+                        transform: "translate(-50%, 45%)",
+                        opacity: sunArc?.isDaylight ? 1 : 0.4,
+                      }}
+                    >
+                      ☀️
+                    </div>
+                  </div>
+                </div>
+
+                <div className={`mt-4 rounded-2xl p-4 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Night sky</div>
+                      <div className="mt-1 text-sm font-semibold">{nightSkyAssessment?.label ?? "—"}</div>
+                    </div>
+                    <div className={`text-sm font-semibold ${subText}`}>{nightSkyAssessment?.score ?? "—"}/100</div>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="relative h-4 overflow-hidden rounded-full ring-1 ring-black/5">
+                      <div
+                        className="absolute inset-0"
+                        style={{
+                          background: "linear-gradient(90deg, #ef4444 0%, #f59e0b 45%, #84cc16 70%, #22c55e 100%)",
+                          opacity: isDarkUI ? 0.9 : 0.85,
+                        }}
+                      />
+                      <div
+                        className={`absolute top-1/2 h-6 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full shadow ${isDarkUI ? "bg-white" : "bg-slate-900"}`}
+                        style={{ left: `${Math.max(0, Math.min(100, Number(nightSkyAssessment?.score ?? 0)))}%` }}
+                      />
+                    </div>
+                    <div className={`mt-2 flex justify-between text-[11px] ${subText}`}>
+                      <span>Poor</span>
+                      <span>Fair</span>
+                      <span>Good</span>
+                      <span>Excellent</span>
+                    </div>
+                  </div>
+
+                  <div className={`mt-3 text-sm ${subText}`}>{nightSkyAssessment?.detail ?? "Assessment unavailable"}</div>
+                </div>
+
+                <div className="mt-4 flex items-start justify-between gap-3">
+                  <div>
+                    <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Planets visible</div>
+                    <div className={`mt-1 text-sm ${subText}`}>At 10:00 PM local time</div>
+                  </div>
+                  <div className={`text-xs ${subText} text-right`}>{planets10pm?.localLabel ?? ""}</div>
+                </div>
+
+                {!planets10pm ? (
+                  <div className={`mt-4 text-sm ${subText}`}>Calculating planets…</div>
+                ) : planets10pm?.error ? (
+                  <div className={`mt-4 text-sm ${subText}`}>{planets10pm.error}</div>
+                ) : (planets10pm.visible?.length ?? 0) === 0 ? (
+                  <div className={`mt-4 text-sm ${subText}`}>No planets are above the horizon at 10:00 PM local time.</div>
+                ) : (
+                  <div className="mt-4 flex flex-col gap-2">
+                    {planets10pm.visible.map((p) => (
+                      <div
+                        key={p.name}
+                        className={`flex items-center justify-between gap-3 rounded-2xl px-3 py-2 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}
+                        title={`${p.name} • Alt ${p.altitude.toFixed(1)}° • Mag ${p.magnitude === null ? "—" : p.magnitude.toFixed(1)}`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="text-2xl" aria-label={`${p.name} icon`}>{planetIcon(p.name)}</div>
+                          <div>
+                            <div className="text-sm font-semibold">{p.name}</div>
+                            <div className={`text-xs ${subText}`}>
+                              Rise: <span className={`font-medium ${isDarkUI ? "text-slate-200" : "text-slate-700"}`}>{p.rise ?? "—"}</span>
+                              <span className="mx-1">•</span>
+                              Set: <span className={`font-medium ${isDarkUI ? "text-slate-200" : "text-slate-700"}`}>{p.set ?? "—"}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className={`text-xs ${subText} text-right`}>Alt {p.altitude.toFixed(0)}°</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Local server tip (hidden, kept for reference) */}
