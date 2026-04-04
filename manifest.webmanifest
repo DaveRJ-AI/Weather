@@ -16,8 +16,8 @@
       "purpose": "any"
     },
     {
-      "src": "./weatherhop_frog_favicon.png",
-      "sizes": "256x256",
+      "src": "./weatherhop_touch_icon.png",
+      "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     }

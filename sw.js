@@ -4,6 +4,8 @@ const APP_SHELL = [
   "./index.html",
   "./favicon.ico",
   "./weatherhop_frog_favicon.png",
+  "./weatherhop_touch_icon.png",
+  "./apple-touch-icon.png",
   "./weatherhop_logo_cropped_tight.png",
   "./manifest.webmanifest",
 ];
