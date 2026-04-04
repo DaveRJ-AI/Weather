@@ -752,11 +752,11 @@
         }, [favorites]);
 
         const selectedFavoriteKey = useMemo(() => {
-          if (!activeLocation) return "";
+          if (!activeLocation || !isActiveFavorited) return "";
           if (activeLocation.mode === "zip") return `zip:${activeLocation.zip}`;
           if (activeLocation.mode === "geo") return `geo:${activeLocation.lat}:${activeLocation.lon}`;
           return "";
-        }, [activeLocation]);
+        }, [activeLocation, isActiveFavorited]);
 
         const [loading, setLoading] = useState(true);
         const [error, setError] = useState("");
@@ -766,6 +766,7 @@
 
         const [lastUpdated, setLastUpdated] = useState(null);
         const [selectedDate, setSelectedDate] = useState(null);
+        const [mobileForecastCompact, setMobileForecastCompact] = useState(false);
 
         const [tzName, setTzName] = useState("auto");
         const [utcOffsetSeconds, setUtcOffsetSeconds] = useState(0);
@@ -1495,9 +1496,10 @@
                   <div
                     className={`rounded-3xl border px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardBg} ${borderSoft}`}
                   >
-                    <label className={`mr-2 text-xs font-semibold uppercase tracking-wide ${subText}`}>Favorites</label>
+                    <div className="flex items-center gap-2 whitespace-nowrap">
+                    <label className={`shrink-0 text-xs font-semibold uppercase tracking-wide ${subText}`}>Favorites</label>
                     <select
-                      className={`rounded-2xl px-3 py-2 text-sm outline-none ring-1 ${
+                      className={`min-w-0 flex-1 rounded-2xl px-3 py-2 text-sm outline-none ring-1 ${
                         isDarkUI ? "bg-white/10 text-white ring-white/10" : "bg-slate-50 text-slate-900 ring-black/5"
                       }`}
                       value={selectedFavoriteKey}
@@ -1533,7 +1535,7 @@
                       title="Choose a saved favorite"
                     >
                       <option value="" disabled>
-                        Select favorite
+                        {isActiveFavorited ? "Select favorite" : "Viewing unsaved location"}
                       </option>
                       {favoriteOptions.map((f) => (
                         <option key={f.key} value={f.key}>
@@ -1542,73 +1544,29 @@
                       ))}
                     </select>
                     <button
-                      onClick={() => {
-                        if (!canSaveActive || isActiveFavorited) return;
-
-                        const defaultLabel = activeLocation.label || activeLocation.city || activeLocation.zip || "Favorite";
-                        const label = prompt("Name this favorite (e.g., Home, Office)", defaultLabel);
-                        if (!label || !label.trim()) return;
-
-                        const newFav = {
-                          mode: activeLocation.mode,
-                          zip: activeLocation.mode === "zip" ? activeLocation.zip : "",
-                          lat: activeLocation.mode === "geo" ? activeLocation.lat : null,
-                          lon: activeLocation.mode === "geo" ? activeLocation.lon : null,
-                          city: activeLocation.city || null,
-                          state: activeLocation.state || null,
-                          label: label.trim(),
-                        };
-                        setFavorites((prev) => [...prev, newFav]);
-
-                        // Keep new location selected
-                        if (activeLocation.mode === "zip") {
-                          setZip(activeLocation.zip);
-                          setActiveLocation({
-                            mode: "zip",
-                            zip: activeLocation.zip,
-                            label: label.trim(),
-                            lat: null,
-                            lon: null,
-                            city: null,
-                            state: null,
-                          });
-                          if (!defaultZip) setDefaultZip(activeLocation.zip);
-                        } else {
-                          setActiveLocation({
-                            ...activeLocation,
-                            label: label.trim(),
-                          });
-                        }
-                      }}
-                      className={`rounded-2xl min-w-[96px] px-3 py-2 text-sm font-semibold shadow hover:opacity-90 active:scale-[0.99] ${
-                        !canSaveActive
-                          ? "bg-gray-300 text-gray-700 cursor-not-allowed"
-                          : isActiveFavorited
-                          ? "bg-amber-500 text-white"
-                          : isDarkUI
-                          ? "bg-white text-black"
-                          : "bg-black text-white"
-                      }`}
-                      disabled={!canSaveActive || isActiveFavorited}
-                      title={
-                        !canSaveActive
-                          ? "Select a ZIP or place first"
-                          : isActiveFavorited
-                          ? "Already a favorite"
-                          : "Add this location to favorites"
-                      }
-                    >
-                      {isActiveFavorited ? "★ Favorited" : "☆ Save"}
-                    </button>
-                    <button
                       onClick={() => setShowManage(true)}
-                      className={`rounded-2xl px-4 py-2 text-sm font-semibold shadow hover:opacity-90 active:scale-[0.99] ${
-                        isDarkUI ? "bg-white text-black" : "bg-black text-white"
+                      className={`flex h-9 w-9 items-center justify-center rounded-full shadow hover:opacity-90 active:scale-[0.99] ${
+                        isDarkUI ? "bg-slate-200/20 text-white ring-1 ring-white/15" : "bg-slate-200 text-slate-900 ring-1 ring-black/5"
                       }`}
                       disabled={!favoritesLoaded}
+                      title="Manage favorites"
+                      aria-label="Manage favorites"
                     >
-                      Manage
+                      <svg
+                        className="h-4 w-4"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.2.49.68.83 1.21 1H21a2 2 0 1 1 0 4h-.39c-.53.17-1.01.51-1.21 1Z"></path>
+                      </svg>
                     </button>
+                    </div>
                   </div>
 
                   {/* Search (NEW, replaces old) */}
@@ -1700,17 +1658,27 @@
                   {/* Refresh */}
                   <button
                     onClick={() => fetchAllForLocation(activeLocation)}
-                    className={`rounded-2xl px-4 py-3 text-sm font-semibold shadow hover:opacity-90 active:scale-[0.99] disabled:opacity-60 ${
-                      isDarkUI ? "bg-white text-black" : "bg-black text-white"
+                    className={`flex h-10 w-10 items-center justify-center rounded-full shadow hover:opacity-90 active:scale-[0.99] disabled:opacity-60 ${
+                      isDarkUI ? "bg-[#7AC943] text-slate-950" : "bg-[#7AC943] text-slate-950"
                     }`}
                     disabled={loading}
+                    title={loading ? "Refreshing weather" : "Refresh weather"}
+                    aria-label={loading ? "Refreshing weather" : "Refresh weather"}
                   >
-                    {loading ? "Refreshing…" : "Refresh"}
+                    <svg
+                      className={`h-4 w-4 ${loading ? "animate-spin" : ""}`}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                      <path d="M21 3v6h-6" />
+                    </svg>
                   </button>
-
-                  <div className={`text-xs ${subText}`}>
-                    {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : ""}
-                  </div>
                 </div>
               </div>
 
@@ -1832,7 +1800,79 @@
               <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
                 {/* LEFT */}
                 <div className={`rounded-3xl border p-6 ${cardBg} ${borderSoft} shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardText}`}>
-                  <div className={`text-sm font-semibold tracking-wide ${subText}`}>Location</div>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 text-sm font-semibold tracking-wide ${subText}`}>
+                      <span>Location</span>
+                      <span className={`text-xs font-medium normal-case tracking-normal ${subText}`}>
+                        {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : ""}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (!canSaveActive || isActiveFavorited) return;
+
+                        const defaultLabel = activeLocation.label || activeLocation.city || activeLocation.zip || "Favorite";
+                        const label = prompt("Name this favorite (e.g., Home, Office)", defaultLabel);
+                        if (!label || !label.trim()) return;
+
+                        const newFav = {
+                          mode: activeLocation.mode,
+                          zip: activeLocation.mode === "zip" ? activeLocation.zip : "",
+                          lat: activeLocation.mode === "geo" ? activeLocation.lat : null,
+                          lon: activeLocation.mode === "geo" ? activeLocation.lon : null,
+                          city: activeLocation.city || null,
+                          state: activeLocation.state || null,
+                          label: label.trim(),
+                        };
+                        setFavorites((prev) => [...prev, newFav]);
+
+                        if (activeLocation.mode === "zip") {
+                          setZip(activeLocation.zip);
+                          setActiveLocation({
+                            mode: "zip",
+                            zip: activeLocation.zip,
+                            label: label.trim(),
+                            lat: null,
+                            lon: null,
+                            city: null,
+                            state: null,
+                          });
+                          if (!defaultZip) setDefaultZip(activeLocation.zip);
+                        } else {
+                          setActiveLocation({
+                            ...activeLocation,
+                            label: label.trim(),
+                          });
+                        }
+                      }}
+                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base shadow transition hover:opacity-90 active:scale-[0.99] ${
+                        !canSaveActive
+                          ? "cursor-not-allowed bg-gray-300 text-gray-700"
+                          : isActiveFavorited
+                          ? "bg-amber-500 text-white"
+                          : isDarkUI
+                          ? "bg-white/10 text-white ring-1 ring-white/15"
+                          : "bg-slate-100 text-slate-900 ring-1 ring-black/5"
+                      }`}
+                      disabled={!canSaveActive || isActiveFavorited}
+                      title={
+                        !canSaveActive
+                          ? "Select a ZIP or place first"
+                          : isActiveFavorited
+                          ? "Favorited"
+                          : "Add this location to favorites"
+                      }
+                      aria-label={
+                        !canSaveActive
+                          ? "Select a ZIP or place first"
+                          : isActiveFavorited
+                          ? "Favorited"
+                          : "Add this location to favorites"
+                      }
+                    >
+                      <span aria-hidden="true">{isActiveFavorited ? "★" : "☆"}</span>
+                    </button>
+                  </div>
                   <div className="mt-2 text-lg font-semibold">
                     {locationTitle}
                     <span className={`${isDarkUI ? "text-slate-300" : "text-slate-500"} font-normal`}> • </span>
@@ -2145,11 +2185,188 @@
                     <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>10-day forecast</div>
                     <div className={`mt-1 text-sm ${subText}`}>High • Low • Humidity • PoP • Precip • Wind (max)</div>
                   </div>
-                  <div className={`text-xs ${subText}`}>Tip: click a row • swipe on mobile</div>
+                  <div className={`hidden sm:block text-xs ${subText}`}>Tip: click a row • swipe on mobile</div>
                 </div>
 
-                <ScrollHint isDarkUI={isDarkUI} text="Swipe forecast table" />
-                <div className="mt-2 overflow-x-auto pb-2">
+                <div className="mt-4 flex sm:hidden">
+                  <div className={`inline-flex rounded-2xl p-1 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-100 ring-black/5"}`}>
+                    <button
+                      type="button"
+                      onClick={() => setMobileForecastCompact(false)}
+                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
+                        !mobileForecastCompact
+                          ? isDarkUI
+                            ? "bg-white text-black"
+                            : "bg-white text-slate-900 shadow"
+                          : subText
+                      }`}
+                    >
+                      Detailed
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMobileForecastCompact(true)}
+                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
+                        mobileForecastCompact
+                          ? isDarkUI
+                            ? "bg-white text-black"
+                            : "bg-white text-slate-900 shadow"
+                          : subText
+                      }`}
+                    >
+                      Compact
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-3 sm:hidden">
+                  {mobileForecastCompact ? (
+                    <div className={`overflow-hidden rounded-3xl ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
+                      {(derived?.tenDay ?? []).map((d, idx) => {
+                        const isSelected = d.date === selectedDate;
+                        const minLow = Number(derived?.minLow);
+                        const maxHigh = Number(derived?.maxHigh);
+                        const low = Number(d.low);
+                        const high = Number(d.high);
+                        const span = Math.max(1, maxHigh - minLow);
+                        const startPct = Number.isFinite(low) ? ((low - minLow) / span) * 100 : 0;
+                        const widthPct = Number.isFinite(low) && Number.isFinite(high) ? (Math.max(1, high - low) / span) * 100 : 18;
+                        const showRain = Number(d.precipProb) >= 20;
+
+                        return (
+                          <button
+                            key={d.date}
+                            type="button"
+                            onClick={() => setSelectedDate(d.date)}
+                            className={`flex w-full items-center gap-3 px-4 py-3 text-left ${
+                              idx > 0 ? (isDarkUI ? "border-t border-white/10" : "border-t border-black/5") : ""
+                            } ${isSelected ? (isDarkUI ? "bg-white/10" : "bg-white/80") : ""}`}
+                            title="Tap to show hourly temps for this date"
+                          >
+                            <div className="w-12 shrink-0 text-xl font-semibold">{idx === 0 ? "Today" : formatWeekdayLabel(d.date)}</div>
+                            <div className="relative w-10 shrink-0 text-center text-3xl leading-none">
+                              {weatherIcon(d.code)}
+                              {showRain ? (
+                                <div className="mt-0.5 text-[11px] font-semibold leading-none text-sky-500">{formatPct(d.precipProb)}</div>
+                              ) : null}
+                            </div>
+                            <div className={`w-12 shrink-0 text-right text-2xl ${subText}`}>{formatTemp(d.low)}</div>
+                            <div className="flex-1 px-1">
+                              <div className={`relative h-2 rounded-full ${isDarkUI ? "bg-white/10" : "bg-slate-200"}`}>
+                                <div
+                                  className="absolute top-0 h-2 rounded-full bg-gradient-to-r from-sky-300 via-cyan-200 to-amber-300"
+                                  style={{
+                                    left: `${Math.max(0, Math.min(100, startPct))}%`,
+                                    width: `${Math.max(8, Math.min(100 - startPct, widthPct))}%`,
+                                  }}
+                                ></div>
+                              </div>
+                            </div>
+                            <div className="w-12 shrink-0 text-right text-2xl font-semibold">{formatTemp(d.high)}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+
+                  {!mobileForecastCompact
+                    ? (derived?.tenDay ?? []).map((d) => {
+                    const isSelected = d.date === selectedDate;
+
+                    const isMaxHigh =
+                      derived?.maxHigh !== null &&
+                      Number.isFinite(Number(d.high)) &&
+                      Number(d.high) === Number(derived.maxHigh);
+
+                    const isMinLow =
+                      derived?.minLow !== null &&
+                      Number.isFinite(Number(d.low)) &&
+                      Number(d.low) === Number(derived.minLow);
+
+                    const highlightClass =
+                      isMaxHigh && isMinLow
+                        ? isDarkUI
+                          ? "bg-purple-500/15 ring-purple-300/30"
+                          : "bg-purple-50 ring-purple-200"
+                        : isMaxHigh
+                        ? isDarkUI
+                          ? "bg-rose-500/15 ring-rose-300/30"
+                          : "bg-rose-50 ring-rose-200"
+                        : isMinLow
+                        ? isDarkUI
+                          ? "bg-sky-500/15 ring-sky-300/30"
+                          : "bg-sky-50 ring-sky-200"
+                        : isDarkUI
+                        ? "bg-white/5 ring-white/10"
+                        : "bg-slate-50 ring-black/5";
+
+                    const selectedRing = isSelected
+                      ? isDarkUI
+                        ? "ring-2 ring-white/25"
+                        : "ring-2 ring-black/10"
+                      : "ring-1";
+
+                    return (
+                      <button
+                        key={d.date}
+                        type="button"
+                        className={`block w-full rounded-3xl p-4 text-left shadow-[0_10px_30px_rgba(0,0,0,0.08)] ${highlightClass} ${selectedRing}`}
+                        onClick={() => setSelectedDate(d.date)}
+                        title="Tap to show hourly temps for this date"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <div className="text-lg font-semibold">{formatWeekdayLabel(d.date)}</div>
+                              {isMaxHigh ? (
+                                <ThermometerBadge color="#f43f5e" label="Hottest day" level="high"></ThermometerBadge>
+                              ) : null}
+                              {isMinLow ? (
+                                <ThermometerBadge color="#0ea5e9" label="Coldest day" level="low"></ThermometerBadge>
+                              ) : null}
+                            </div>
+                            <div className={`mt-1 text-sm ${isDarkUI ? "text-slate-200" : "text-slate-700"}`}>
+                              {weatherLabel(d.code)}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="text-3xl leading-none">{weatherIcon(d.code)}</div>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3">
+                          <div>
+                            <div className={`text-[11px] font-semibold uppercase tracking-wide ${subText}`}>High</div>
+                            <div className="mt-1 text-lg font-semibold">{formatTemp(d.high)}</div>
+                          </div>
+                          <div>
+                            <div className={`text-[11px] font-semibold uppercase tracking-wide ${subText}`}>Low</div>
+                            <div className="mt-1 text-lg font-semibold">{formatTemp(d.low)}</div>
+                          </div>
+                          <div>
+                            <div className={`text-[11px] font-semibold uppercase tracking-wide ${subText}`}>Humidity</div>
+                            <div className="mt-1 text-base font-semibold">{formatPct(d.humidMax)}</div>
+                          </div>
+                          <div>
+                            <div className={`text-[11px] font-semibold uppercase tracking-wide ${subText}`}>PoP</div>
+                            <div className="mt-1 text-base font-semibold">{formatPct(d.precipProb)}</div>
+                          </div>
+                        </div>
+
+                        <div className={`mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm ${subText}`}>
+                          <span>Precip {formatInches(d.precip)}</span>
+                          <span>Wind {formatMph(d.windMax)}</span>
+                        </div>
+                      </button>
+                    );
+                  })
+                    : null}
+                </div>
+
+                <div className="hidden sm:block">
+                  <ScrollHint isDarkUI={isDarkUI} text="Swipe forecast table" />
+                </div>
+                <div className="mt-2 hidden overflow-x-auto pb-2 sm:block">
                   <table className="w-full min-w-[1240px] border-separate border-spacing-y-2">
                     <thead>
                       <tr className={`text-left text-xs ${subText}`}>
