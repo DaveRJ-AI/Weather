@@ -1054,6 +1054,10 @@
           return () => document.removeEventListener("click", onDocClick);
         }, []);
 
+        useEffect(() => {
+          if (showManage) setSearchOpen(false);
+        }, [showManage]);
+
         // When favorites dropdown (or zip state) changes: update active location only if currently in ZIP mode
         useEffect(() => {
           if (!zip) return;
@@ -1544,7 +1548,10 @@
                       ))}
                     </select>
                     <button
-                      onClick={() => setShowManage(true)}
+                      onClick={() => {
+                        setSearchOpen(false);
+                        setShowManage(true);
+                      }}
                       className={`flex h-9 w-9 items-center justify-center rounded-full shadow hover:opacity-90 active:scale-[0.99] ${
                         isDarkUI ? "bg-slate-200/20 text-white ring-1 ring-white/15" : "bg-slate-200 text-slate-900 ring-1 ring-black/5"
                       }`}
@@ -1604,7 +1611,7 @@
                       disabled={loading}
                     />
 
-                    {searchOpen ? (
+                    {searchOpen && !showManage ? (
                       <div
                         onMouseDown={(e) => e.preventDefault()}
                         className={`absolute z-[90] left-0 right-0 mt-2 overflow-hidden rounded-3xl border shadow-[0_20px_50px_rgba(0,0,0,0.20)] ${
@@ -1683,8 +1690,12 @@
               </div>
 
               {showManage && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur">
-                  <div className={`rounded-3xl border p-6 shadow-[0_20px_50px_rgba(0,0,0,0.30)] max-w-md w-full mx-4 ${cardBg} ${borderSoft} ${cardText}`}>
+                <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60">
+                  <div
+                    className={`rounded-3xl border p-6 shadow-[0_20px_50px_rgba(0,0,0,0.30)] max-w-md w-full mx-4 ${
+                      isDarkUI ? "border-white/10 bg-slate-950 text-slate-100" : "border-black/5 bg-white text-slate-900"
+                    }`}
+                  >
                     <div className="flex items-center justify-between mb-4">
                       <div className={`text-lg font-semibold ${subText}`}>Manage Favorites</div>
                       <button
@@ -1961,7 +1972,7 @@
                 </div>
 
                 {/* MIDDLE */}
-                <div className={`hidden rounded-3xl border p-6 lg:block ${cardBg} ${borderSoft} shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardText}`}>
+                <div className={`rounded-3xl border p-6 ${cardBg} ${borderSoft} shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardText}`}>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div>
                       <div className={`text-sm font-semibold tracking-wide ${subText}`}>Hourly Forecast</div>
