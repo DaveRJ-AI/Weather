@@ -866,6 +866,7 @@
         formatTooltip,
         nowLineColor,
         minY,
+        maxY,
       }) {
         const canvasRef = useRef(null);
         const chartRef = useRef(null);
@@ -922,6 +923,7 @@
                 x: { ticks: { color: axisColor, maxTicksLimit: 10 }, grid: { color: gridColor } },
                 y: {
                   min: Number.isFinite(minY) ? minY : undefined,
+                  max: Number.isFinite(maxY) ? maxY : undefined,
                   ticks: { color: axisColor },
                   grid: { color: gridColor },
                 },
@@ -935,7 +937,7 @@
               chartRef.current = null;
             }
           };
-        }, [labels?.join(","), values?.join(","), title, chartTitleDate, isDarkUI, nowIndex, minY]);
+        }, [labels?.join(","), values?.join(","), title, chartTitleDate, isDarkUI, nowIndex, minY, maxY]);
 
         return <canvas ref={canvasRef}></canvas>;
       }
@@ -2544,6 +2546,7 @@
                         nowIndex={nowIndex}
                         formatTooltip={(y) => ` ${Math.round(y)}%`}
                         minY={0}
+                        maxY={100}
                       />
                     </div>
 
