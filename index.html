@@ -197,6 +197,8 @@
 
       const WEATHERHOP_TRIPS_STORAGE_KEY = "weatherhop-trips";
       const TRIP_FORECAST_CACHE_MS = 45 * 60 * 1000;
+      const TRIP_TYPICAL_CACHE_MS = 14 * 24 * 60 * 60 * 1000;
+      const TRIP_TYPICAL_YEARS = 10;
 
       function todayISODate() {
         return new Date().toISOString().slice(0, 10);
@@ -281,6 +283,10 @@
         return `weatherhop-trip-forecast-${Number(lat).toFixed(4)}-${Number(lon).toFixed(4)}`;
       }
 
+      function tripTypicalCacheKey(lat, lon, monthDay) {
+        return `weatherhop-trip-typical-${Number(lat).toFixed(4)}-${Number(lon).toFixed(4)}-${monthDay}`;
+      }
+
       async function fetchTripForecast({ lat, lon }) {
         const cacheKey = tripForecastCacheKey(lat, lon);
         try {
@@ -310,7 +316,64 @@
         return data;
       }
 
-      function tripCellFromForecast({ forecast, location, date }) {
+      function finiteAverage(values) {
+        const nums = (values ?? []).map(Number).filter((value) => Number.isFinite(value));
+        if (!nums.length) return null;
+        return nums.reduce((sum, value) => sum + value, 0) / nums.length;
+      }
+
+      async function fetchTripTypicalWeather({ lat, lon, date }) {
+        const monthDay = String(date ?? "").slice(5, 10);
+        if (!monthDay || monthDay.length !== 5) return null;
+        const cacheKey = tripTypicalCacheKey(lat, lon, monthDay);
+        try {
+          const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
+          if (cached?.savedAt && Date.now() - cached.savedAt < TRIP_TYPICAL_CACHE_MS && cached?.data) return cached.data;
+        } catch {}
+
+        const currentYear = new Date().getFullYear();
+        const years = Array.from({ length: TRIP_TYPICAL_YEARS }, (_, idx) => currentYear - 1 - idx);
+        const samples = await Promise.all(
+          years.map(async (year) => {
+            const sampleDate = `${year}-${monthDay}`;
+            const params = new URLSearchParams({
+              latitude: String(lat),
+              longitude: String(lon),
+              timezone: "auto",
+              temperature_unit: "fahrenheit",
+              precipitation_unit: "inch",
+              start_date: sampleDate,
+              end_date: sampleDate,
+              daily: "temperature_2m_max,temperature_2m_min,precipitation_sum",
+            });
+            const response = await fetch(`https://archive-api.open-meteo.com/v1/archive?${params.toString()}`);
+            if (!response.ok) return null;
+            const data = await response.json();
+            return {
+              highTemp: data?.daily?.temperature_2m_max?.[0],
+              lowTemp: data?.daily?.temperature_2m_min?.[0],
+              precipitation: data?.daily?.precipitation_sum?.[0],
+            };
+          })
+        );
+        const validSamples = samples.filter(Boolean);
+        const precipValues = validSamples.map((sample) => Number(sample.precipitation)).filter((value) => Number.isFinite(value));
+        const wetDays = precipValues.filter((value) => value >= 0.01).length;
+        const typical = {
+          monthDay,
+          years: validSamples.length,
+          highTemp: finiteAverage(validSamples.map((sample) => sample.highTemp)),
+          lowTemp: finiteAverage(validSamples.map((sample) => sample.lowTemp)),
+          avgPrecip: finiteAverage(precipValues),
+          wetChance: precipValues.length ? (wetDays / precipValues.length) * 100 : null,
+        };
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), data: typical }));
+        } catch {}
+        return typical;
+      }
+
+      function tripCellFromForecast({ forecast, typical, location, date }) {
         const daily = forecast?.daily;
         const idx = daily?.time?.findIndex((value) => value === date) ?? -1;
         const isUserThere = isUserAtLocationOnDate(location, date);
@@ -344,6 +407,19 @@
 
         const forecastDates = daily?.time ?? [];
         const maxForecastDate = forecastDates.length ? forecastDates[forecastDates.length - 1] : null;
+        const hasTypicalTemps = Number.isFinite(Number(typical?.highTemp)) && Number.isFinite(Number(typical?.lowTemp));
+        if (maxForecastDate && date > maxForecastDate && hasTypicalTemps) {
+          return {
+            date,
+            isUserThere,
+            status: "typical",
+            highTemp: typical.highTemp,
+            lowTemp: typical.lowTemp,
+            precipitationChance: typical.wetChance,
+            avgPrecip: typical.avgPrecip,
+            typicalYears: typical.years,
+          };
+        }
         return {
           date,
           isUserThere,
@@ -1249,6 +1325,8 @@
         const [searchResults, setSearchResults] = useState([]);
         const [searchLoading, setSearchLoading] = useState(false);
         const [forecastByLocation, setForecastByLocation] = useState({});
+        const [typicalByLocationDate, setTypicalByLocationDate] = useState({});
+        const [stopsCollapsed, setStopsCollapsed] = useState(() => loadTrips().some((trip) => (trip.locations ?? []).length > 0));
         const searchTimerRef = useRef(null);
 
         useEffect(() => {
@@ -1264,6 +1342,10 @@
           () => dateRangeISO(selectedTrip?.startDate, selectedTrip?.endDate),
           [selectedTrip?.startDate, selectedTrip?.endDate]
         );
+
+        useEffect(() => {
+          if (selectedTrip?.id && (selectedTrip.locations ?? []).length > 0) setStopsCollapsed(true);
+        }, [selectedTrip?.id]);
 
         function updateSelectedTrip(patchOrUpdater) {
           if (!selectedTrip) return;
@@ -1302,6 +1384,7 @@
           const trip = createDefaultTrip();
           setTrips((prev) => [trip, ...prev]);
           setSelectedTripId(trip.id);
+          setStopsCollapsed(false);
         }
 
         function duplicateTrip() {
@@ -1317,6 +1400,7 @@
           };
           setTrips((prev) => [copy, ...prev]);
           setSelectedTripId(copy.id);
+          setStopsCollapsed(false);
         }
 
         function deleteTrip() {
@@ -1384,14 +1468,20 @@
           if (!selectedTrip || !result) return;
           try {
             const resolved = await resolveTripSearchResult(result);
+            const existingLocations = selectedTrip.locations ?? [];
+            const lastDeparture = existingLocations.length ? existingLocations[existingLocations.length - 1].departureDate : null;
+            const arrivalDate =
+              lastDeparture && lastDeparture >= selectedTrip.startDate && lastDeparture <= selectedTrip.endDate
+                ? lastDeparture
+                : selectedTrip.startDate;
             const location = {
               id: makeId("trip-location"),
               name: resolved.name,
               displayName: resolved.displayName,
               latitude: resolved.latitude,
               longitude: resolved.longitude,
-              arrivalDate: selectedTrip.startDate,
-              departureDate: selectedTrip.endDate,
+              arrivalDate,
+              departureDate: arrivalDate,
               notes: "",
             };
             updateSelectedTrip({ locations: [...(selectedTrip.locations ?? []), location] });
@@ -1456,13 +1546,59 @@
           };
         }, [selectedTrip?.id, selectedTrip?.locations?.map((location) => `${location.id}:${location.latitude}:${location.longitude}`).join("|")]);
 
+        useEffect(() => {
+          if (!selectedTrip?.locations?.length || !tripDates.length) {
+            setTypicalByLocationDate({});
+            return;
+          }
+
+          let cancelled = false;
+          selectedTrip.locations.forEach((location) => {
+            const forecast = forecastByLocation[location.id]?.data;
+            const forecastDates = forecast?.daily?.time ?? [];
+            const maxForecastDate = forecastDates.length ? forecastDates[forecastDates.length - 1] : null;
+            if (!maxForecastDate) return;
+
+            tripDates.forEach((date) => {
+              if (date <= maxForecastDate) return;
+              const key = `${location.id}:${date}`;
+              if (typicalByLocationDate[key]?.data || typicalByLocationDate[key]?.loading) return;
+              setTypicalByLocationDate((prev) => ({ ...prev, [key]: { loading: true, error: "", data: null } }));
+              fetchTripTypicalWeather({ lat: location.latitude, lon: location.longitude, date })
+                .then((data) => {
+                  if (!cancelled) setTypicalByLocationDate((prev) => ({ ...prev, [key]: { loading: false, error: "", data } }));
+                })
+                .catch((e) => {
+                  if (!cancelled) {
+                    setTypicalByLocationDate((prev) => ({
+                      ...prev,
+                      [key]: { loading: false, error: e?.message ?? "Typical weather unavailable", data: null },
+                    }));
+                  }
+                });
+            });
+          });
+
+          return () => {
+            cancelled = true;
+          };
+        }, [
+          selectedTrip?.id,
+          selectedTrip?.locations?.map((location) => `${location.id}:${location.latitude}:${location.longitude}`).join("|"),
+          tripDates.join(","),
+          Object.entries(forecastByLocation)
+            .map(([key, value]) => `${key}:${value?.data?.daily?.time?.slice(-1)[0] ?? value?.loading ?? ""}`)
+            .join("|"),
+        ]);
+
         const tripSummary = useMemo(() => {
           if (!selectedTrip?.locations?.length || !tripDates.length) return [];
           const availableHereCells = [];
           for (const location of selectedTrip.locations) {
             const forecast = forecastByLocation[location.id]?.data;
             for (const date of tripDates) {
-              const cell = tripCellFromForecast({ forecast, location, date });
+              const typical = typicalByLocationDate[`${location.id}:${date}`]?.data;
+              const cell = tripCellFromForecast({ forecast, typical, location, date });
               if (cell.isUserThere && cell.status === "available") availableHereCells.push({ location, cell });
             }
           }
@@ -1474,13 +1610,13 @@
           const hottest = availableHereCells.reduce((best, item) => (Number(item.cell.highTemp) > Number(best?.cell?.highTemp ?? -999) ? item : best), null);
           const coldest = availableHereCells.reduce((best, item) => (Number(item.cell.lowTemp) < Number(best?.cell?.lowTemp ?? 999) ? item : best), null);
 
-          if (rainy[0]) notes.push(`Rain risk: ${rainy[0].location.displayName} on ${shortDateLabel(rainy[0].cell.date)} (${formatPct(rainy[0].cell.precipitationChance)}).`);
-          if (stormy[0]) notes.push(`Storm risk: ${stormy[0].location.displayName} on ${shortDateLabel(stormy[0].cell.date)}.`);
-          if (hottest?.cell) notes.push(`Warmest scheduled day: ${hottest.location.displayName}, ${shortDateLabel(hottest.cell.date)} at ${formatTemp(hottest.cell.highTemp)}.`);
-          if (coldest?.cell) notes.push(`Coolest scheduled morning: ${coldest.location.displayName}, ${shortDateLabel(coldest.cell.date)} at ${formatTemp(coldest.cell.lowTemp)}.`);
-          if (windy[0]) notes.push(`Windy day possible: ${windy[0].location.displayName} on ${shortDateLabel(windy[0].cell.date)} (${formatMph(windy[0].cell.windSpeed)}).`);
+          if (rainy[0]) notes.push({ type: "rain", text: `Rain risk: ${rainy[0].location.displayName} on ${shortDateLabel(rainy[0].cell.date)} (${formatPct(rainy[0].cell.precipitationChance)}).` });
+          if (stormy[0]) notes.push({ type: "storm", text: `Storm risk: ${stormy[0].location.displayName} on ${shortDateLabel(stormy[0].cell.date)}.` });
+          if (hottest?.cell) notes.push({ type: "hot", text: `Warmest scheduled day: ${hottest.location.displayName}, ${shortDateLabel(hottest.cell.date)} at ${formatTemp(hottest.cell.highTemp)}.` });
+          if (coldest?.cell) notes.push({ type: "cold", text: `Coolest scheduled morning: ${coldest.location.displayName}, ${shortDateLabel(coldest.cell.date)} at ${formatTemp(coldest.cell.lowTemp)}.` });
+          if (windy[0]) notes.push({ type: "wind", text: `Windy day possible: ${windy[0].location.displayName} on ${shortDateLabel(windy[0].cell.date)} (${formatMph(windy[0].cell.windSpeed)}).` });
           return notes.slice(0, 5);
-        }, [selectedTrip, tripDates.join(","), forecastByLocation]);
+        }, [selectedTrip, tripDates.join(","), forecastByLocation, typicalByLocationDate]);
 
         const inputClass = `rounded-2xl px-3 py-2 text-sm outline-none ring-1 ${
           isDarkUI ? "bg-white/10 text-white ring-white/10 placeholder:text-slate-400" : "bg-white text-slate-900 ring-black/10 placeholder:text-slate-400"
@@ -1552,17 +1688,37 @@
                 </div>
 
                 <div className={`rounded-3xl p-4 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                     <div>
-                      <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Locations</div>
-                      <div className={`mt-1 text-sm ${subText}`}>Add each stop, then set the dates you expect to be there.</div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Locations</div>
+                        {(selectedTrip.locations ?? []).length ? (
+                          <div className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${isDarkUI ? "bg-[#7AC943]/20 text-[#B8F27A]" : "bg-[#7AC943]/20 text-slate-800"}`}>
+                            Autosaved
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className={`mt-1 text-sm ${subText}`}>
+                        {(selectedTrip.locations ?? []).length
+                          ? `${selectedTrip.locations.length} stop${selectedTrip.locations.length === 1 ? "" : "s"} saved locally.`
+                          : "Add each stop, then set the dates you expect to be there."}
+                      </div>
                     </div>
-                    <div className="relative w-full lg:w-[360px]">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <button type="button" onClick={() => setStopsCollapsed((value) => !value)} className={buttonClass}>
+                        {stopsCollapsed ? "Edit stops" : "Done editing"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {!stopsCollapsed ? (
+                  <div className="mt-4 space-y-3">
+                    <div className="relative w-full lg:w-[420px]">
                       <input
                         className={`${inputClass} w-full`}
                         value={searchText}
                         onChange={(e) => setSearchText(e.target.value)}
-                        placeholder="Search city, state, or ZIP"
+                        placeholder="Add by searching for city, state or zip"
                       />
                       {searchText ? (
                         <div className={`absolute left-0 right-0 z-[70] mt-2 overflow-hidden rounded-3xl border shadow-[0_20px_50px_rgba(0,0,0,0.20)] ${
@@ -1584,9 +1740,6 @@
                         </div>
                       ) : null}
                     </div>
-                  </div>
-
-                  <div className="mt-4 space-y-3">
                     {(selectedTrip.locations ?? []).length ? null : (
                       <div className={`rounded-2xl p-4 text-sm ring-1 ${isDarkUI ? "bg-black/10 ring-white/10" : "bg-white ring-black/5"} ${subText}`}>
                         Add at least one location to build the grid.
@@ -1634,6 +1787,7 @@
                       </div>
                     ))}
                   </div>
+                  ) : null}
                 </div>
 
                 <div className={`rounded-3xl p-4 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
@@ -1646,11 +1800,25 @@
                   </div>
                   {tripSummary.length ? (
                     <div className="mt-4 grid gap-2 lg:grid-cols-2">
-                      {tripSummary.map((item, idx) => (
-                        <div key={`${item}:${idx}`} className={`rounded-2xl px-3 py-2 text-sm ring-1 ${isDarkUI ? "bg-black/10 ring-white/10" : "bg-white ring-black/5"}`}>
-                          {item}
-                        </div>
-                      ))}
+                      {tripSummary.map((item, idx) => {
+                        const summaryTone =
+                          item.type === "hot"
+                            ? isDarkUI
+                              ? "bg-red-500/15 ring-red-300/30"
+                              : "bg-red-50 ring-red-200"
+                            : item.type === "cold"
+                            ? isDarkUI
+                              ? "bg-sky-500/15 ring-sky-300/30"
+                              : "bg-sky-50 ring-sky-200"
+                            : isDarkUI
+                            ? "bg-black/10 ring-white/10"
+                            : "bg-white ring-black/5";
+                        return (
+                          <div key={`${item.text}:${idx}`} className={`rounded-2xl px-3 py-2 text-sm ring-1 ${summaryTone}`}>
+                            {item.text}
+                          </div>
+                        );
+                      })}
                     </div>
                   ) : (
                     <div className={`mt-4 rounded-2xl p-4 text-sm ring-1 ${isDarkUI ? "bg-black/10 ring-white/10" : "bg-white ring-black/5"} ${subText}`}>
@@ -1660,17 +1828,35 @@
                 </div>
 
                 <div className={`overflow-hidden rounded-3xl ring-1 ${isDarkUI ? "ring-white/10" : "ring-black/5"}`}>
+                  <div className={`flex flex-wrap items-center gap-3 border-b px-4 py-3 text-xs ${isDarkUI ? "border-white/10 bg-slate-950/70" : "border-black/5 bg-white/80"} ${subText}`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`h-4 w-4 rounded-md border ${isDarkUI ? "border-white/45 bg-white/5" : "border-slate-500 bg-white"}`}></span>
+                      <span>10-day Forecast</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`h-4 w-4 rounded-md border-2 border-dashed ${isDarkUI ? "border-violet-300 bg-violet-400/25" : "border-violet-500 bg-violet-100"}`}></span>
+                      <span>10 Year Historical Average</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="h-4 w-4 rounded-md border-2 border-emerald-300 bg-transparent"></span>
+                      <span>Scheduled stop</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`h-4 w-4 rounded-md border ${isDarkUI ? "border-amber-300/60 bg-amber-500/25" : "border-amber-300 bg-amber-100"}`}></span>
+                      <span>Weather risk</span>
+                    </div>
+                  </div>
                   <div className="overflow-x-auto">
                     <table className="w-full min-w-[920px] border-separate border-spacing-0">
                       <thead>
                         <tr className={isDarkUI ? "bg-slate-950/90" : "bg-white"}>
-                          <th className={`sticky left-0 z-20 min-w-[190px] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${subText} ${isDarkUI ? "bg-slate-950" : "bg-white"}`}>
-                            Location
+                          <th className={`sticky left-0 z-20 w-[64px] min-w-[64px] px-2 py-3 text-left text-xs font-semibold uppercase tracking-wide sm:w-[190px] sm:min-w-[190px] sm:px-4 ${subText} ${isDarkUI ? "bg-slate-950" : "bg-white"}`}>
+                            <span className="sm:hidden">Stop</span>
+                            <span className="hidden sm:inline">Location</span>
                           </th>
                           {tripDates.map((date) => (
                             <th key={date} className={`min-w-[150px] border-l px-3 py-3 text-left text-xs font-semibold ${isDarkUI ? "border-white/10" : "border-black/5"}`}>
-                              <div>{shortDateLabel(date)}</div>
-                              <div className={`mt-0.5 font-normal ${subText}`}>{date}</div>
+                              <div>{formatDateLabel(date)}</div>
                             </th>
                           ))}
                         </tr>
@@ -1680,24 +1866,33 @@
                           const forecastState = forecastByLocation[location.id];
                           return (
                             <tr key={location.id}>
-                              <th className={`sticky left-0 z-10 border-t px-4 py-3 text-left align-top text-sm font-semibold ${
+                              <th className={`sticky left-0 z-10 w-[64px] min-w-[64px] border-t px-2 py-3 text-left align-middle text-sm font-semibold sm:w-[190px] sm:min-w-[190px] sm:px-4 sm:align-top ${
                                 isDarkUI ? "border-white/10 bg-slate-950" : "border-black/5 bg-white"
                               }`}>
-                                <div>{location.displayName}</div>
-                                <div className={`mt-1 text-xs font-normal ${subText}`}>
-                                  {location.arrivalDate} to {location.departureDate}
+                                <div className="hidden sm:block">
+                                  <div>{location.displayName}</div>
+                                  {forecastState?.loading ? <div className={`mt-2 text-xs font-normal ${subText}`}>Loading forecast...</div> : null}
+                                  {forecastState?.error ? <div className="mt-2 text-xs font-normal text-red-500">{forecastState.error}</div> : null}
                                 </div>
-                                {forecastState?.loading ? <div className={`mt-2 text-xs ${subText}`}>Loading forecast...</div> : null}
-                                {forecastState?.error ? <div className="mt-2 text-xs text-red-500">{forecastState.error}</div> : null}
+                                <div className="flex h-32 items-center justify-center sm:hidden">
+                                  <div className="max-h-28 rotate-180 overflow-hidden text-ellipsis text-[13px] leading-tight [writing-mode:vertical-rl]">
+                                    {location.displayName}
+                                  </div>
+                                </div>
                               </th>
-                              {tripDates.map((date) => {
-                                const cell = tripCellFromForecast({ forecast: forecastState?.data, location, date });
-                                const isHere = cell.isUserThere;
-                                const riskClass =
-                                  cell.riskLevel === "high"
-                                    ? isDarkUI
-                                      ? "border-red-300/40 bg-red-500/15"
-                                      : "border-red-200 bg-red-50"
+	                              {tripDates.map((date) => {
+	                                const typicalState = typicalByLocationDate[`${location.id}:${date}`];
+	                                const cell = tripCellFromForecast({ forecast: forecastState?.data, typical: typicalState?.data, location, date });
+	                                const isHere = cell.isUserThere;
+	                                const riskClass =
+	                                  cell.status === "typical"
+	                                    ? isDarkUI
+	                                      ? "border-violet-300/80 bg-violet-500/18 border-dashed"
+	                                      : "border-violet-500 bg-violet-50 border-dashed"
+	                                    : cell.riskLevel === "high"
+	                                    ? isDarkUI
+	                                      ? "border-red-300/40 bg-red-500/15"
+	                                      : "border-red-200 bg-red-50"
                                     : cell.riskLevel === "moderate"
                                     ? isDarkUI
                                       ? "border-amber-300/40 bg-amber-500/15"
@@ -1709,27 +1904,36 @@
                                   <td key={`${location.id}:${date}`} className={`border-l border-t p-2 align-top ${isDarkUI ? "border-white/10" : "border-black/5"}`}>
                                     <div
                                       className={`min-h-[116px] rounded-2xl border p-3 text-sm ${riskClass} ${
-                                        isHere ? (isDarkUI ? "ring-2 ring-emerald-300/40" : "ring-2 ring-emerald-300") : "opacity-75"
+                                        isHere ? (isDarkUI ? "ring-2 ring-emerald-300/40" : "ring-2 ring-emerald-300") : cell.status === "typical" ? "" : "opacity-75"
                                       }`}
                                     >
-                                      {isHere ? <div className="mb-2 inline-flex rounded-full bg-[#7AC943] px-2 py-0.5 text-[11px] font-semibold text-slate-950">Here</div> : null}
                                       {cell.status === "available" ? (
-                                        <>
-                                          <div className="flex items-center justify-between gap-2">
-                                            <div className="text-lg font-semibold">{formatTemp(cell.highTemp)} / {formatTemp(cell.lowTemp)}</div>
-                                            <div className="text-2xl leading-none">{cell.conditionIcon}</div>
-                                          </div>
+	                                        <>
+	                                          <div className="flex items-center justify-between gap-2">
+	                                            <div className="text-lg font-semibold">{formatTemp(cell.highTemp)} / {formatTemp(cell.lowTemp)}</div>
+	                                            <div className="text-2xl leading-none">{cell.conditionIcon}</div>
+	                                          </div>
                                           <div className={`mt-1 text-xs ${subText}`}>{cell.conditionLabel}</div>
                                           <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
                                             <div>Rain {formatPct(cell.precipitationChance)}</div>
                                             <div>Wind {formatMph(cell.windSpeed)}</div>
                                           </div>
-                                          {cell.riskSummary ? <div className="mt-2 text-xs font-semibold">{cell.riskSummary}</div> : null}
-                                        </>
-                                      ) : cell.status === "pending" ? (
-                                        <div className={`text-xs ${subText}`}>Forecast not available yet</div>
-                                      ) : forecastState?.loading ? (
-                                        <div className={`text-xs ${subText}`}>Loading...</div>
+	                                          {cell.riskSummary ? <div className="mt-2 text-xs font-semibold">{cell.riskSummary}</div> : null}
+	                                        </>
+	                                      ) : cell.status === "typical" ? (
+	                                        <>
+	                                          <div className="text-lg font-semibold">{formatTemp(cell.highTemp)} / {formatTemp(cell.lowTemp)}</div>
+	                                          <div className={`mt-2 text-xs ${subText}`}>Historical average</div>
+	                                          <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+	                                            <div>Wet {formatPct(cell.precipitationChance)}</div>
+	                                            <div>Avg {formatInches(cell.avgPrecip)}</div>
+	                                          </div>
+	                                          <div className={`mt-2 text-[11px] ${subText}`}>Forecast pending</div>
+	                                        </>
+	                                      ) : cell.status === "pending" ? (
+	                                        <div className={`text-xs ${subText}`}>{typicalState?.loading ? "Loading typical weather..." : "Forecast not available yet"}</div>
+	                                      ) : forecastState?.loading ? (
+	                                        <div className={`text-xs ${subText}`}>Loading...</div>
                                       ) : (
                                         <div className={`text-xs ${subText}`}>No forecast data</div>
                                       )}
@@ -1838,6 +2042,33 @@
           return "";
         }, [activeLocation, isActiveFavorited]);
 
+        function selectFavoriteOption(fav) {
+          if (!fav) return;
+          setFavoritesOpen(false);
+          if (fav.mode === "zip") {
+            setZip(fav.zip);
+            setActiveLocation({
+              mode: "zip",
+              zip: fav.zip,
+              label: fav.label || fav.zip,
+              lat: null,
+              lon: null,
+              city: null,
+              state: null,
+            });
+          } else if (fav.mode === "geo") {
+            setActiveLocation({
+              mode: "geo",
+              zip: "",
+              label: fav.label || favoriteDisplayLabel(fav),
+              lat: fav.lat,
+              lon: fav.lon,
+              city: fav.city || null,
+              state: fav.state || null,
+            });
+          }
+        }
+
         const [loading, setLoading] = useState(true);
         const [error, setError] = useState("");
 
@@ -1867,7 +2098,9 @@
         const [searchResults, setSearchResults] = useState([]);
         const [searchLoading, setSearchLoading] = useState(false);
         const [searchOpen, setSearchOpen] = useState(false);
+        const [favoritesOpen, setFavoritesOpen] = useState(false);
         const searchBoxRef = useRef(null);
+        const favoritesBoxRef = useRef(null);
         const searchDebounceRef = useRef(null);
 
         const [nowTick, setNowTick] = useState(0);
@@ -2249,13 +2482,17 @@
           function onDocClick(e) {
             if (!searchBoxRef.current) return;
             if (!searchBoxRef.current.contains(e.target)) setSearchOpen(false);
+            if (favoritesBoxRef.current && !favoritesBoxRef.current.contains(e.target)) setFavoritesOpen(false);
           }
           document.addEventListener("click", onDocClick);
           return () => document.removeEventListener("click", onDocClick);
         }, []);
 
         useEffect(() => {
-          if (showManage) setSearchOpen(false);
+          if (showManage) {
+            setSearchOpen(false);
+            setFavoritesOpen(false);
+          }
         }, [showManage]);
 
         // Startup selection: current location default, then saved favorite, then empty/search state.
@@ -2744,156 +2981,132 @@
 
         return (
           <div className={`${bgClass} min-h-screen transition-colors duration-700`}>
-            <div className="mx-auto max-w-6xl px-4 py-8">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-	                <div>
-	                  <div className="flex items-center">
-	                    <img
-	                      src="./weatherhop_logo_cropped_tight.png"
-	                      alt="WeatherHop"
-	                      className="h-32 w-auto sm:h-20"
-	                    />
-	                  </div>
-	                  <div className={`mt-3 inline-flex rounded-2xl p-1 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white/70 ring-black/5"}`}>
-	                    {["weather", "travel"].map((view) => (
-	                      <button
-	                        key={view}
-	                        type="button"
-	                        onClick={() => {
-	                          setShowManage(false);
-	                          setSearchOpen(false);
-	                          setActiveView(view);
-	                        }}
-	                        className={`rounded-xl px-3 py-1.5 text-sm font-semibold capitalize transition ${
-	                          activeView === view
-	                            ? isDarkUI
-	                              ? "bg-white text-black"
-	                              : "bg-slate-900 text-white"
-	                            : subText
-	                        }`}
-	                      >
-	                        {view}
-	                      </button>
-	                    ))}
-	                  </div>
-	                </div>
+            <div className="mx-auto max-w-6xl px-4 py-6 sm:py-8">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <div className="flex items-center">
+                    <img
+                      src="./weatherhop_logo_cropped_tight.png"
+                      alt="WeatherHop"
+                      className="h-24 w-auto sm:h-20 lg:h-[4.5rem]"
+                    />
+                  </div>
+                  <div className={`inline-flex self-start rounded-2xl p-1 ring-1 sm:self-auto ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white/70 ring-black/5"}`}>
+                    {["weather", "travel"].map((view) => (
+                      <button
+                        key={view}
+                        type="button"
+                        onClick={() => {
+                          setShowManage(false);
+                          setSearchOpen(false);
+                          setFavoritesOpen(false);
+                          setActiveView(view);
+                        }}
+                        className={`rounded-xl px-4 py-2 text-sm font-semibold capitalize transition ${
+                          activeView === view
+                            ? isDarkUI
+                              ? "bg-[#7AC943] text-slate-950"
+                              : "bg-[#7AC943] text-slate-950"
+                            : subText
+                        }`}
+                      >
+                        {view}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-	                {activeView === "weather" ? (
-	                  <div className="flex flex-wrap items-center gap-2">
-                  {/* Favorites */}
-                  <div
-                    className={`rounded-3xl border px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardBg} ${borderSoft}`}
-                  >
-                    <div className="flex items-center gap-2 whitespace-nowrap">
-                    <label className={`shrink-0 text-xs font-semibold uppercase tracking-wide ${subText}`}>Favorites</label>
-                    <select
-                      className={`min-w-0 flex-1 rounded-2xl px-3 py-2 text-sm outline-none ring-1 ${
-                        isDarkUI ? "bg-white/10 text-white ring-white/10" : "bg-slate-50 text-slate-900 ring-black/5"
-                      }`}
-                      value={selectedFavoriteKey}
-                      onChange={(e) => {
-                        const key = e.target.value;
-                        const fav = favoriteOptions.find((f) => f.key === key);
-                        if (!fav) return;
-
-                        if (fav.mode === "zip") {
-                          setZip(fav.zip);
-                          setActiveLocation({
-                            mode: "zip",
-                            zip: fav.zip,
-                            label: fav.label || fav.zip,
-                            lat: null,
-                            lon: null,
-                            city: null,
-                            state: null,
-                          });
-                        } else if (fav.mode === "geo") {
-                          setActiveLocation({
-                            mode: "geo",
-                            zip: "",
-                            label: fav.label || favoriteDisplayLabel(fav),
-                            lat: fav.lat,
-                            lon: fav.lon,
-                            city: fav.city || null,
-                            state: fav.state || null,
-                          });
-                        }
-                      }}
-                      disabled={loading || !favoritesLoaded}
-                      title="Choose a saved favorite"
-                    >
-                      <option value="" disabled>
-                        {isActiveFavorited ? "Select favorite" : "Viewing unsaved location"}
-                      </option>
-                      {favoriteOptions.map((f) => (
-                        <option key={f.key} value={f.key}>
-                          {f.display}
-                        </option>
-                      ))}
-                    </select>
+                {activeView === "weather" ? (
+                  <div className="flex flex-wrap items-center gap-2 sm:gap-3 lg:justify-end">
+                  <div ref={favoritesBoxRef} className="relative z-[85] w-full sm:w-auto">
                     <button
+                      type="button"
                       onClick={() => {
                         setSearchOpen(false);
-                        setShowManage(true);
+                        setFavoritesOpen((value) => !value);
                       }}
-                      className={`flex h-9 w-9 items-center justify-center rounded-full shadow hover:opacity-90 active:scale-[0.99] ${
-                        isDarkUI ? "bg-slate-200/20 text-white ring-1 ring-white/15" : "bg-slate-200 text-slate-900 ring-1 ring-black/5"
-                      }`}
-                      disabled={!favoritesLoaded}
-                      title="Manage favorites"
-                      aria-label="Manage favorites"
+                      className={`flex h-12 w-full items-center justify-between gap-2 rounded-3xl border px-4 text-xs font-semibold uppercase tracking-wide shadow-[0_10px_30px_rgba(0,0,0,0.10)] transition hover:opacity-90 sm:w-auto ${cardBg} ${borderSoft} ${subText}`}
+                      disabled={loading || !favoritesLoaded}
+                      title="Choose a saved favorite"
+                      aria-expanded={favoritesOpen}
                     >
-                      <svg
-                        className="h-4 w-4"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <circle cx="12" cy="12" r="3"></circle>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.2.49.68.83 1.21 1H21a2 2 0 1 1 0 4h-.39c-.53.17-1.01.51-1.21 1Z"></path>
+                      <span>Favorites</span>
+                      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="m6 9 6 6 6-6" />
                       </svg>
                     </button>
-	                </div>
-		              </div>
+                    {favoritesOpen ? (
+                      <div
+                        onMouseDown={(e) => e.preventDefault()}
+                        className={`absolute left-0 z-[95] mt-2 w-72 max-w-[calc(100vw-2rem)] overflow-hidden rounded-3xl border shadow-[0_20px_50px_rgba(0,0,0,0.20)] ${
+                          isDarkUI ? "border-white/10 bg-black/80 text-slate-100 backdrop-blur" : "border-black/5 bg-white/95 text-slate-900 backdrop-blur"
+                        }`}
+                      >
+                        <div className={`px-4 py-3 text-xs ${subText}`}>
+                          {favoriteOptions.length ? "Select a saved location:" : "No favorites saved yet."}
+                        </div>
+                        {favoriteOptions.map((f) => (
+                          <button
+                            key={f.key}
+                            type="button"
+                            className={`w-full px-4 py-3 text-left text-sm hover:opacity-90 ${
+                              selectedFavoriteKey === f.key
+                                ? isDarkUI
+                                  ? "bg-white/15"
+                                  : "bg-[#7AC943]/15"
+                                : isDarkUI
+                                ? "hover:bg-white/10"
+                                : "hover:bg-black/5"
+                            }`}
+                            onClick={() => selectFavoriteOption(f)}
+                          >
+                            <div className="truncate font-semibold">{f.display}</div>
+                            <div className={`mt-0.5 text-xs ${subText}`}>{f.mode === "zip" ? "ZIP favorite" : "Saved place"}</div>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
 
 	                  {/* Search (NEW, replaces old) */}
                   <div
                     ref={searchBoxRef}
-                    className={`relative z-[80] rounded-3xl border px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardBg} ${borderSoft}`}
-                    style={{ minWidth: 310 }}
+                    className={`relative z-[80] w-full rounded-3xl border px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.10)] sm:w-auto ${cardBg} ${borderSoft}`}
                   >
-                    <label className={`mr-2 text-xs font-semibold uppercase tracking-wide ${subText}`}>Search</label>
-                    <input
-                      className={`rounded-2xl px-3 py-2 text-sm outline-none ring-1 w-[220px] sm:w-[240px] ${
-                        isDarkUI
-                          ? "bg-white/10 text-white ring-white/10 placeholder:text-slate-400"
-                          : "bg-slate-50 text-slate-900 ring-black/5 placeholder:text-slate-400"
-                      }`}
-                      placeholder="City, State or ZIP"
-                      value={searchText}
-                      onChange={(e) => {
-                        setSearchText(e.target.value);
-                        setSearchOpen(true);
-                      }}
-                      onFocus={() => setSearchOpen(true)}
-                      onKeyDown={async (e) => {
-                        if (e.key === "Enter") {
-                          const q = String(searchText ?? "").trim();
-                          if (isLikelyZip(q)) {
-                            await applySearchPick({ _type: "zip", zip: q });
-                          } else if (searchResults?.length) {
-                            await applySearchPick(searchResults[0]);
+                    <div className="flex items-center gap-2">
+                      <label className={`shrink-0 text-xs font-semibold uppercase tracking-wide ${subText}`}>Search</label>
+                      <input
+                        className={`min-w-0 flex-1 rounded-2xl px-3 py-2 text-sm outline-none ring-1 sm:w-[240px] ${
+                          isDarkUI
+                            ? "bg-white/10 text-white ring-white/10 placeholder:text-slate-400"
+                            : "bg-slate-50 text-slate-900 ring-black/5 placeholder:text-slate-400"
+                        }`}
+                        placeholder="City, State or ZIP"
+                        value={searchText}
+                        onChange={(e) => {
+                          setSearchText(e.target.value);
+                          setFavoritesOpen(false);
+                          setSearchOpen(true);
+                        }}
+                        onFocus={() => {
+                          setFavoritesOpen(false);
+                          setSearchOpen(true);
+                        }}
+                        onKeyDown={async (e) => {
+                          if (e.key === "Enter") {
+                            const q = String(searchText ?? "").trim();
+                            if (isLikelyZip(q)) {
+                              await applySearchPick({ _type: "zip", zip: q });
+                            } else if (searchResults?.length) {
+                              await applySearchPick(searchResults[0]);
+                            }
+                          } else if (e.key === "Escape") {
+                            setSearchOpen(false);
                           }
-                        } else if (e.key === "Escape") {
-                          setSearchOpen(false);
-                        }
-                      }}
-                      disabled={loading}
-                    />
+                        }}
+                        disabled={loading}
+                      />
+                    </div>
 
                     {searchOpen && !showManage ? (
                       <div
@@ -2946,7 +3159,34 @@
                     ) : null}
                   </div>
 
-                  {/* Refresh */}
+                  <button
+                    onClick={() => {
+                      setSearchOpen(false);
+                      setFavoritesOpen(false);
+                      setShowManage(true);
+                    }}
+                    className={`flex h-10 w-10 items-center justify-center rounded-full shadow hover:opacity-90 active:scale-[0.99] disabled:opacity-60 ${
+                      isDarkUI ? "bg-slate-200/20 text-white ring-1 ring-white/15" : "bg-white text-slate-900 ring-1 ring-black/5"
+                    }`}
+                    disabled={!favoritesLoaded}
+                    title="Manage favorites"
+                    aria-label="Manage favorites"
+                  >
+                    <svg
+                      className="h-4 w-4"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <circle cx="12" cy="12" r="3"></circle>
+                      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.2.49.68.83 1.21 1H21a2 2 0 1 1 0 4h-.39c-.53.17-1.01.51-1.21 1Z"></path>
+                    </svg>
+                  </button>
+
                   <button
                     onClick={() => useBrowserLocation({ persist: true, fallback: false })}
                     className={`flex h-10 w-10 items-center justify-center rounded-full shadow hover:opacity-90 active:scale-[0.99] disabled:opacity-60 ${
