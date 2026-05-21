@@ -267,6 +267,29 @@
         }
       }
 
+      function pollenLevelTone(level, isDarkUI) {
+        const category = String(level?.category || level?.label || "").toLowerCase();
+        if (category.includes("very high")) {
+          return isDarkUI ? "bg-rose-500/20 text-rose-100 ring-rose-300/30" : "bg-rose-100 text-rose-900 ring-rose-200";
+        }
+        if (category.includes("high")) {
+          return isDarkUI ? "bg-orange-500/20 text-orange-100 ring-orange-300/30" : "bg-orange-100 text-orange-900 ring-orange-200";
+        }
+        if (category.includes("moderate")) {
+          return isDarkUI ? "bg-amber-500/20 text-amber-100 ring-amber-300/30" : "bg-amber-100 text-amber-900 ring-amber-200";
+        }
+        if (category.includes("low")) {
+          return isDarkUI ? "bg-emerald-500/20 text-emerald-100 ring-emerald-300/30" : "bg-emerald-100 text-emerald-900 ring-emerald-200";
+        }
+        return isDarkUI ? "bg-white/10 text-slate-100 ring-white/15" : "bg-slate-100 text-slate-700 ring-slate-200";
+      }
+
+      function formatPollenLevel(level) {
+        if (!level) return "—";
+        const label = level.category || level.label || "Available";
+        return Number.isFinite(Number(level.value)) ? `${label} ${Math.round(Number(level.value))}/5` : label;
+      }
+
       const WEATHERHOP_TRIPS_STORAGE_KEY = "weatherhop-trips";
       const TRIP_FORECAST_CACHE_MS = 45 * 60 * 1000;
       const TRIP_TYPICAL_CACHE_MS = 14 * 24 * 60 * 60 * 1000;
@@ -2536,6 +2559,7 @@
 
         const [place, setPlace] = useState(null);
         const [data, setData] = useState(null);
+        const [pollen, setPollen] = useState({ loading: false, error: "", data: null });
 
         const [lastUpdated, setLastUpdated] = useState(null);
         const [selectedDate, setSelectedDate] = useState(null);
@@ -2602,6 +2626,17 @@
           const wxRes = await fetch(`https://api.open-meteo.com/v1/forecast?${params.toString()}`);
           if (!wxRes.ok) throw new Error(`Weather fetch failed (${wxRes.status}).`);
           return await readJsonResponse(wxRes, "Weather forecast");
+        }
+
+        async function fetchPollen({ lat, lon }) {
+          const params = new URLSearchParams({
+            lat: String(lat),
+            lon: String(lon),
+          });
+          const res = await fetch(`/.netlify/functions/pollen?${params.toString()}`);
+          const json = await readJsonResponse(res, "Pollen forecast");
+          if (!res.ok) throw new Error(json?.error || `Pollen fetch failed (${res.status}).`);
+          return json;
         }
 
         async function reverseGeocodeCurrentLocation({ lat, lon }) {
@@ -2991,10 +3026,38 @@
           if (!favoritesLoaded) return;
           if (!activeLocation) {
             setLoading(false);
+            setPollen({ loading: false, error: "", data: null });
             return;
           }
           fetchAllForLocation(activeLocation);
         }, [favoritesLoaded, activeLocation?.mode, activeLocation?.zip, activeLocation?.lat, activeLocation?.lon, activeLocation?.label]);
+
+        useEffect(() => {
+          if (!place?.lat || !place?.lon) {
+            setPollen({ loading: false, error: "", data: null });
+            return;
+          }
+
+          let cancelled = false;
+          setPollen({ loading: true, error: "", data: null });
+          fetchPollen({ lat: place.lat, lon: place.lon })
+            .then((pollenData) => {
+              if (!cancelled) setPollen({ loading: false, error: "", data: pollenData });
+            })
+            .catch((e) => {
+              if (!cancelled) {
+                setPollen({
+                  loading: false,
+                  error: e?.message || "Pollen forecast unavailable.",
+                  data: null,
+                });
+              }
+            });
+
+          return () => {
+            cancelled = true;
+          };
+        }, [place?.lat, place?.lon]);
 
         // Refresh tick
         useEffect(() => {
@@ -4435,6 +4498,69 @@
                     </div>
                   )}
                 </div>
+              </div>
+
+              {/* Pollen summary */}
+              <div className={`mt-6 rounded-3xl border p-4 sm:p-5 ${cardBg} ${borderSoft} shadow-[0_10px_30px_rgba(0,0,0,0.10)] ${cardText}`}>
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="min-w-0">
+                    <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Pollen forecast</div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <div className="text-lg font-semibold">
+                        {pollen.loading
+                          ? "Checking pollen..."
+                          : pollen.data?.overall
+                          ? formatPollenLevel(pollen.data.overall)
+                          : pollen.error
+                          ? "Pollen unavailable"
+                          : "Select a location"}
+                      </div>
+                      {pollen.data?.dominantType ? (
+                        <span className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ${pollenLevelTone(pollen.data.overall, isDarkUI)}`}>
+                          Dominant: {pollen.data.dominantType}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className={`mt-1 text-sm ${subText}`}>
+                      {pollen.data?.recommendation ||
+                        (pollen.error
+                          ? "Pollen data needs the local Netlify function or deployed Netlify environment."
+                          : "Tree, grass, and weed pollen will appear here when data is available.")}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 sm:min-w-[420px]">
+                    {["TREE", "GRASS", "WEED"].map((code) => {
+                      const item = pollen.data?.types?.find((type) => type.code === code);
+                      return (
+                        <div
+                          key={code}
+                          className={`rounded-2xl px-3 py-2 ring-1 ${
+                            item?.level
+                              ? pollenLevelTone(item.level, isDarkUI)
+                              : isDarkUI
+                              ? "bg-white/5 text-slate-200 ring-white/10"
+                              : "bg-slate-50 text-slate-700 ring-black/5"
+                          }`}
+                        >
+                          <div className="text-[11px] font-semibold uppercase tracking-wide">{item?.name || code.toLowerCase()}</div>
+                          <div className="mt-1 text-sm font-semibold">{item?.level ? formatPollenLevel(item.level) : pollen.loading ? "..." : "—"}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {pollen.data?.plants?.length ? (
+                  <div className={`mt-3 flex flex-wrap items-center gap-2 text-xs ${subText}`}>
+                    <span className="font-semibold">Top plants:</span>
+                    {pollen.data.plants.map((plant) => (
+                      <span key={plant.code || plant.name} className={`rounded-full px-2.5 py-1 ring-1 ${pollenLevelTone(plant.level, isDarkUI)}`}>
+                        {plant.name}: {plant.level?.category || "available"}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               {/* 10-day forecast */}
