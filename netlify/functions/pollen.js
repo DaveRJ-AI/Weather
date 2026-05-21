@@ -28,11 +28,14 @@ function safeLevel(indexInfo) {
   };
 }
 
-function normalizePollenResponse(payload) {
-  const day = payload?.dailyInfo?.[0] || null;
-  const types = day?.pollenTypeInfo || [];
-  const plants = day?.plantInfo || [];
+function dateFromGoogleParts(date) {
+  return date
+    ? [date.year, String(date.month).padStart(2, "0"), String(date.day).padStart(2, "0")].join("-")
+    : null;
+}
 
+function summarizeDay(day) {
+  const types = day?.pollenTypeInfo || [];
   const typeSummaries = types.map((item) => ({
     code: item.code || "",
     name: item.displayName || item.code || "Pollen",
@@ -44,6 +47,25 @@ function normalizePollenResponse(payload) {
     typeSummaries
       .filter((item) => Number.isFinite(Number(item.level?.value)))
       .sort((a, b) => Number(b.level.value) - Number(a.level.value))[0] || null;
+
+  return {
+    date: dateFromGoogleParts(day?.date),
+    overall: dominant?.level || null,
+    dominantType: dominant ? dominant.name : "",
+    types: typeSummaries,
+    recommendation:
+      day?.healthRecommendations?.[0] ||
+      (dominant?.level?.category
+        ? `${dominant.name} pollen is ${dominant.level.category.toLowerCase()} today.`
+        : "Pollen details are limited for this location today."),
+  };
+}
+
+function normalizePollenResponse(payload) {
+  const days = (payload?.dailyInfo || []).map(summarizeDay);
+  const day = payload?.dailyInfo?.[0] || null;
+  const today = days[0] || summarizeDay(day);
+  const plants = day?.plantInfo || [];
 
   const plantSummaries = plants
     .filter((item) => Number.isFinite(Number(item.indexInfo?.value)))
@@ -57,25 +79,16 @@ function normalizePollenResponse(payload) {
     }));
 
   return {
-    date: day?.date
-      ? [day.date.year, String(day.date.month).padStart(2, "0"), String(day.date.day).padStart(2, "0")].join("-")
-      : null,
-    overall: dominant?.level || null,
-    dominantType: dominant ? dominant.name : "",
-    types: typeSummaries,
+    ...today,
+    days,
     plants: plantSummaries,
-    recommendation:
-      day?.healthRecommendations?.[0] ||
-      (dominant?.level?.category
-        ? `${dominant.name} pollen is ${dominant.level.category.toLowerCase()} today.`
-        : "Pollen details are limited for this location today."),
   };
 }
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "GET") return json(405, { error: "Method not allowed." });
 
-  const apiKey = process.env.GOOGLE_POLLEN_API_KEY;
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_POLLEN_API_KEY;
   if (!apiKey) return json(500, { error: "Pollen API key is not configured." });
 
   const lat = roundedCoord(event.queryStringParameters?.lat);
@@ -93,7 +106,7 @@ exports.handler = async (event) => {
   const params = new URLSearchParams({
     "location.latitude": String(lat),
     "location.longitude": String(lon),
-    days: "1",
+    days: "5",
     key: apiKey,
   });
 
@@ -122,4 +135,3 @@ exports.handler = async (event) => {
   cache.set(cacheKey, { createdAt: Date.now(), data });
   return json(200, data);
 };
-
