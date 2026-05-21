@@ -4344,7 +4344,6 @@
                   {/* Next 24 hours */}
                   <div className={`mt-4 rounded-2xl p-4 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
                     <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Next 24 hours</div>
-                    <div className={`mt-1 text-sm ${subText}`}>Humidity high • Dew point low</div>
                     <div className="mt-3 grid grid-cols-2 gap-3">
                       <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white ring-black/5"}`}>
                         <div className={`text-xs ${subText}`}>Humidity (High)</div>
@@ -4359,7 +4358,6 @@
 
                   <div className={`mt-4 rounded-2xl p-4 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
                     <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Today details</div>
-                    <div className={`mt-1 text-sm ${subText}`}>Helpful at-a-glance conditions</div>
                     <div className="mt-3 grid grid-cols-2 gap-3">
                       <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white ring-black/5"}`}>
                         <div className={`text-xs ${subText}`}>Rain Chance</div>
@@ -4757,7 +4755,6 @@
                 <div className="flex items-end justify-between">
                   <div>
                     <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>10-day forecast</div>
-                    <div className={`mt-1 text-sm ${subText}`}>High • Low • Humidity • PoP • Precip • Wind (max)</div>
                   </div>
                   <div className={`hidden sm:block text-xs ${subText}`}>Tip: click a row</div>
                 </div>
@@ -5146,9 +5143,7 @@
                 <div className="flex items-end justify-between">
                   <div>
                     <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Favorites comparison</div>
-                    <div className={`mt-1 text-sm ${subText}`}>
-                      Differences vs current location (temp / humidity / local time)
-                    </div>
+                    <div className={`mt-1 text-sm ${subText}`}>Differences vs current location</div>
                   </div>
                   <div className={`text-xs ${subText}`}>Blue = lower/earlier • Red = higher/later</div>
                 </div>
