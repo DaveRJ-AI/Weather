@@ -2634,6 +2634,7 @@
         const searchDebounceRef = useRef(null);
         const hourlySectionRef = useRef(null);
         const tenDaySectionRef = useRef(null);
+        const outdoorHealthRequestRef = useRef(0);
 
         const [nowTick, setNowTick] = useState(0);
 
@@ -2696,6 +2697,47 @@
           return json;
         }
 
+        function refreshOutdoorHealth({ lat, lon }) {
+          if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) {
+            setPollen({ loading: false, error: "", data: null });
+            setAirQuality({ loading: false, error: "", data: null });
+            return;
+          }
+
+          const requestId = outdoorHealthRequestRef.current + 1;
+          outdoorHealthRequestRef.current = requestId;
+          setPollen({ loading: true, error: "", data: null });
+          setAirQuality({ loading: true, error: "", data: null });
+
+          fetchPollen({ lat, lon })
+            .then((pollenData) => {
+              if (outdoorHealthRequestRef.current === requestId) setPollen({ loading: false, error: "", data: pollenData });
+            })
+            .catch((e) => {
+              if (outdoorHealthRequestRef.current === requestId) {
+                setPollen({
+                  loading: false,
+                  error: e?.message || "Pollen forecast unavailable.",
+                  data: null,
+                });
+              }
+            });
+
+          fetchAirQuality({ lat, lon })
+            .then((airQualityData) => {
+              if (outdoorHealthRequestRef.current === requestId) setAirQuality({ loading: false, error: "", data: airQualityData });
+            })
+            .catch((e) => {
+              if (outdoorHealthRequestRef.current === requestId) {
+                setAirQuality({
+                  loading: false,
+                  error: e?.message || "Air quality unavailable.",
+                  data: null,
+                });
+              }
+            });
+        }
+
         async function reverseGeocodeCurrentLocation({ lat, lon }) {
           const params = new URLSearchParams({
             latitude: String(lat),
@@ -2753,6 +2795,8 @@
               label,
               mode: loc.mode,
             });
+
+            refreshOutdoorHealth({ lat, lon });
 
             const wx = await fetchOpenMeteo({ lat, lon });
 
@@ -3090,49 +3134,6 @@
           fetchAllForLocation(activeLocation);
         }, [favoritesLoaded, activeLocation?.mode, activeLocation?.zip, activeLocation?.lat, activeLocation?.lon, activeLocation?.label]);
 
-        useEffect(() => {
-          if (!place?.lat || !place?.lon) {
-            setPollen({ loading: false, error: "", data: null });
-            setAirQuality({ loading: false, error: "", data: null });
-            return;
-          }
-
-          let cancelled = false;
-          setPollen({ loading: true, error: "", data: null });
-          setAirQuality({ loading: true, error: "", data: null });
-          fetchPollen({ lat: place.lat, lon: place.lon })
-            .then((pollenData) => {
-              if (!cancelled) setPollen({ loading: false, error: "", data: pollenData });
-            })
-            .catch((e) => {
-              if (!cancelled) {
-                setPollen({
-                  loading: false,
-                  error: e?.message || "Pollen forecast unavailable.",
-                  data: null,
-                });
-              }
-            });
-
-          fetchAirQuality({ lat: place.lat, lon: place.lon })
-            .then((airQualityData) => {
-              if (!cancelled) setAirQuality({ loading: false, error: "", data: airQualityData });
-            })
-            .catch((e) => {
-              if (!cancelled) {
-                setAirQuality({
-                  loading: false,
-                  error: e?.message || "Air quality unavailable.",
-                  data: null,
-                });
-              }
-            });
-
-          return () => {
-            cancelled = true;
-          };
-        }, [place?.lat, place?.lon]);
-
         // Refresh tick
         useEffect(() => {
           const id = setInterval(() => setNowTick((x) => x + 1), 60 * 1000);
@@ -3341,10 +3342,17 @@
           const precip = data.hourly.precipitation_probability ?? [];
           const wind = data.hourly.wind_speed_10m ?? [];
           const codes = data.hourly.weathercode ?? [];
+          const todayIso = derived?.tenDay?.[0]?.date;
+          const trimPastHours = expandedForecastDate === todayIso;
+          const nowUtc = Date.now();
 
           const rows = [];
           for (let i = 0; i < times.length; i++) {
             if (!String(times[i]).startsWith(expandedForecastDate)) continue;
+            if (trimPastHours) {
+              const utcMillis = localIsoToUtcMillis(times[i], utcOffsetSeconds);
+              if (Number.isFinite(utcMillis) && utcMillis < nowUtc - 60 * 60 * 1000) continue;
+            }
             rows.push({
               time: formatHourLabel(times[i]),
               temp: temps[i],
@@ -3354,7 +3362,7 @@
             });
           }
           return rows;
-        }, [expandedForecastDate, data]);
+        }, [expandedForecastDate, data, derived?.tenDay?.[0]?.date, utcOffsetSeconds, nowTick]);
 
         const sunArc = useMemo(() => {
           if (!derived?.selectedDayData) return null;
@@ -3820,12 +3828,12 @@
                     className={`flex h-10 w-10 items-center justify-center rounded-full shadow hover:opacity-90 active:scale-[0.99] disabled:opacity-60 ${
                       isDarkUI ? "bg-[#7AC943] text-slate-950" : "bg-[#7AC943] text-slate-950"
                     }`}
-                    disabled={loading || !activeLocation}
-                    title={loading ? "Refreshing weather" : "Refresh weather"}
-                    aria-label={loading ? "Refreshing weather" : "Refresh weather"}
+                    disabled={loading || pollen.loading || airQuality.loading || !activeLocation}
+                    title={loading || pollen.loading || airQuality.loading ? "Refreshing weather and outdoor health" : "Refresh weather and outdoor health"}
+                    aria-label={loading || pollen.loading || airQuality.loading ? "Refreshing weather and outdoor health" : "Refresh weather and outdoor health"}
                   >
                     <svg
-                      className={`h-4 w-4 ${loading ? "animate-spin" : ""}`}
+                      className={`h-4 w-4 ${loading || pollen.loading || airQuality.loading ? "animate-spin" : ""}`}
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
