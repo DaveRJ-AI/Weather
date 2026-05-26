@@ -1,4 +1,4 @@
-const CACHE_NAME = "weatherhop-shell-v3";
+const CACHE_NAME = "weatherhop-shell-v4";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -37,7 +37,6 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (requestUrl.origin !== self.location.origin) {
-    event.respondWith(fetch(event.request));
     return;
   }
 
