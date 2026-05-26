@@ -1,4 +1,5 @@
 const WEATHER_CACHE_MS = 5 * 60 * 1000;
+const UPSTREAM_TIMEOUT_MS = 6500;
 const cache = new Map();
 
 function json(statusCode, body, maxAge = 120) {
@@ -42,11 +43,18 @@ exports.handler = async (event) => {
 
   let response;
   let text;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
   try {
-    response = await fetch(`https://api.open-meteo.com/v1/forecast?${cacheKey}`);
+    response = await fetch(`https://api.open-meteo.com/v1/forecast?${cacheKey}`, {
+      signal: controller.signal,
+    });
     text = await response.text();
   } catch {
+    clearTimeout(timeout);
     return json(502, { error: "Weather service is temporarily unavailable." }, 30);
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (!response.ok) {

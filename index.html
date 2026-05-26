@@ -263,6 +263,7 @@
         try {
           return text ? JSON.parse(text) : null;
         } catch {
+          if (!response.ok) throw new Error(`${label} is temporarily unavailable.`);
           throw new Error(`${label} returned non-JSON data.`);
         }
       }
