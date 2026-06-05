@@ -1,6 +1,7 @@
 const WEATHER_CACHE_MS = 5 * 60 * 1000;
 const UPSTREAM_TIMEOUT_MS = 6500;
 const cache = new Map();
+const inFlight = new Map();
 
 function json(statusCode, body, maxAge = 120) {
   return {
@@ -40,42 +41,66 @@ exports.handler = async (event) => {
   if (cached && Date.now() - cached.createdAt < WEATHER_CACHE_MS) {
     return json(200, { ...cached.data, cached: true }, 300);
   }
-
-  let response;
-  let text;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
-  try {
-    response = await fetch(`https://api.open-meteo.com/v1/forecast?${cacheKey}`, {
-      signal: controller.signal,
-    });
-    text = await response.text();
-  } catch {
-    clearTimeout(timeout);
-    return json(502, { error: "Weather service is temporarily unavailable." }, 30);
-  } finally {
-    clearTimeout(timeout);
-  }
-
-  if (!response.ok) {
-    let message = `Weather service failed (${response.status}).`;
+  if (inFlight.has(cacheKey)) {
     try {
-      const errorBody = JSON.parse(text);
-      message = errorBody?.reason || errorBody?.error || message;
+      return json(200, { ...(await inFlight.get(cacheKey)), cached: true }, 300);
     } catch {
-      if (response.status === 429) message = "Weather service is rate limiting requests. Please try again shortly.";
-      if (response.status >= 500) message = "Weather service is temporarily unavailable.";
+      return json(502, { error: "Weather service is temporarily unavailable." }, 30);
     }
-    return json(response.status === 429 ? 429 : 502, { error: message }, 30);
   }
 
-  let data;
+  const upstreamRequest = (async () => {
+    let response;
+    let text;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+    try {
+      response = await fetch(`https://api.open-meteo.com/v1/forecast?${cacheKey}`, {
+        signal: controller.signal,
+      });
+      text = await response.text();
+    } catch {
+      const error = new Error("Weather service is temporarily unavailable.");
+      error.statusCode = 502;
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!response.ok) {
+      let message = `Weather service failed (${response.status}).`;
+      try {
+        const errorBody = JSON.parse(text);
+        message = errorBody?.reason || errorBody?.error || message;
+      } catch {
+        if (response.status === 429) message = "Weather service is rate limiting requests. Please try again shortly.";
+        if (response.status >= 500) message = "Weather service is temporarily unavailable.";
+      }
+      const error = new Error(message);
+      error.statusCode = response.status === 429 ? 429 : 502;
+      throw error;
+    }
+
+    let data;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      const error = new Error("Weather service returned non-JSON data.");
+      error.statusCode = 502;
+      throw error;
+    }
+
+    cache.set(cacheKey, { createdAt: Date.now(), data });
+    return data;
+  })();
+
+  inFlight.set(cacheKey, upstreamRequest);
+
   try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    return json(502, { error: "Weather service returned non-JSON data." }, 30);
+    return json(200, await upstreamRequest, 300);
+  } catch (error) {
+    return json(error.statusCode || 502, { error: error.message || "Weather service is temporarily unavailable." }, 30);
+  } finally {
+    inFlight.delete(cacheKey);
   }
-
-  cache.set(cacheKey, { createdAt: Date.now(), data });
-  return json(200, data, 300);
 };
