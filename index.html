@@ -2228,6 +2228,8 @@
 
       function WeatherApp() {
         const USE_CURRENT_LOCATION_KEY = "weatherhop-use-current-location";
+        const CURRENT_LOCATION_CACHE_KEY = "weatherhop-current-location-cache";
+        const CURRENT_LOCATION_CACHE_MS = 6 * 60 * 60 * 1000;
         const ACCOUNT_PROMPT_SEEN_KEY = "weatherhop-account-prompt-seen";
 
         // Favorites state (persistent)
@@ -2973,7 +2975,47 @@
           });
         }
 
-        function useBrowserLocation({ persist = true, fallback = false } = {}) {
+        function readCachedCurrentLocation() {
+          try {
+            const cached = JSON.parse(localStorage.getItem(CURRENT_LOCATION_CACHE_KEY) || "null");
+            if (!cached?.location || !cached?.savedAt) return null;
+            if (Date.now() - Number(cached.savedAt) > CURRENT_LOCATION_CACHE_MS) return null;
+            const lat = Number(cached.location.lat);
+            const lon = Number(cached.location.lon);
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+            return {
+              ...cached.location,
+              lat,
+              lon,
+              source: "current",
+              mode: "geo",
+            };
+          } catch (e) {
+            console.warn("Failed to read cached current location", e);
+            return null;
+          }
+        }
+
+        function saveCachedCurrentLocation(location) {
+          try {
+            localStorage.setItem(CURRENT_LOCATION_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), location }));
+          } catch (e) {
+            console.warn("Failed to save cached current location", e);
+          }
+        }
+
+        function useBrowserLocation({ persist = true, fallback = false, useCached = false } = {}) {
+          if (useCached) {
+            const cachedLocation = readCachedCurrentLocation();
+            if (cachedLocation) {
+              setZip(null);
+              setActiveLocation(cachedLocation);
+              setLocationStatus("Using recent current location.");
+              setRequestingLocation(false);
+              return;
+            }
+          }
+
           if (!navigator.geolocation) {
             setLocationStatus("Location is not available in this browser.");
             if (fallback) fallbackToSavedLocation();
@@ -2999,6 +3041,8 @@
                 city: cityLabel,
                 state: locationName.state || "",
               };
+
+              saveCachedCurrentLocation(nextLocation);
 
               if (persist) {
                 localStorage.setItem(USE_CURRENT_LOCATION_KEY, "true");
@@ -3155,7 +3199,7 @@
           if (!favoritesLoaded || activeLocation) return;
 
           if (useCurrentLocationDefault) {
-            useBrowserLocation({ persist: false, fallback: true });
+            useBrowserLocation({ persist: false, fallback: true, useCached: true });
             return;
           }
 
