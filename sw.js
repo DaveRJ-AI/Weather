@@ -1,4 +1,4 @@
-const CACHE_NAME = "weatherhop-shell-v4";
+const CACHE_NAME = "weatherhop-shell-v5";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -28,10 +28,26 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
 
   const requestUrl = new URL(event.request.url);
+  const networkFirstDestinations = new Set(["document", "script", "style", "worker"]);
+  const shouldUseNetworkFirst =
+    event.request.mode === "navigate" ||
+    networkFirstDestinations.has(event.request.destination) ||
+    requestUrl.pathname === "/" ||
+    requestUrl.pathname.endsWith(".html") ||
+    requestUrl.pathname.endsWith(".js") ||
+    requestUrl.pathname.endsWith(".css");
 
-  if (event.request.mode === "navigate") {
+  if (shouldUseNetworkFirst) {
     event.respondWith(
-      fetch(event.request).catch(() => caches.match("./index.html"))
+      fetch(event.request)
+        .then((response) => {
+          if (requestUrl.origin === self.location.origin && response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request).then((cached) => cached || caches.match("./index.html")))
     );
     return;
   }
