@@ -2791,7 +2791,7 @@
                 high: Number(highsByDate?.[date]),
               }))
               .filter(({ high }) => Number.isFinite(high));
-            if (checkedHighs.length < 2) return;
+            if (!checkedHighs.length) return;
 
             const consensusHigh = median(checkedHighs.map(({ high }) => high));
             if (!Number.isFinite(consensusHigh)) return;
@@ -2799,7 +2799,8 @@
             const isHotDay = openMeteoHigh >= 95 || consensusHigh >= 95;
             const rawDifference = Math.abs(openMeteoHigh - consensusHigh);
             const displayedDifference = Math.abs(Math.round(openMeteoHigh) - Math.round(consensusHigh));
-            const isMeaningfulDifference = rawDifference >= 4 || displayedDifference >= 4;
+            const isHighOutlier = openMeteoHigh >= 105 && openMeteoHigh > consensusHigh && rawDifference >= 2.5;
+            const isMeaningfulDifference = rawDifference >= 4 || displayedDifference >= 4 || isHighOutlier;
             if (!isHotDay || !isMeaningfulDifference) return;
 
             adjustedHighs[idx] = consensusHigh;
