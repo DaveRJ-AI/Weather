@@ -1700,6 +1700,7 @@
         const [forecastByLocation, setForecastByLocation] = useState({});
         const [typicalByLocationDate, setTypicalByLocationDate] = useState({});
         const [stopsCollapsed, setStopsCollapsed] = useState(() => loadTrips(tripScope).some((trip) => (trip.locations ?? []).length > 0));
+        const [showVisitDaysOnly, setShowVisitDaysOnly] = useState(true);
         const searchTimerRef = useRef(null);
         const cloudTripsSnapshotRef = useRef(null);
 
@@ -2231,22 +2232,50 @@
                 </div>
 
                 <div className={`overflow-hidden rounded-3xl ring-1 ${isDarkUI ? "ring-white/10" : "ring-black/5"}`}>
-                  <div className={`flex flex-wrap items-center gap-3 border-b px-4 py-3 text-xs ${isDarkUI ? "border-white/10 bg-slate-950/70" : "border-black/5 bg-white/80"} ${subText}`}>
-                    <div className="flex items-center gap-1.5">
-                      <span className={`h-4 w-4 rounded-md border ${isDarkUI ? "border-white/45 bg-white/5" : "border-slate-500 bg-white"}`}></span>
-                      <span>10-day Forecast</span>
+                  <div className={`flex flex-col gap-3 border-b px-4 py-3 ${isDarkUI ? "border-white/10 bg-slate-950/70" : "border-black/5 bg-white/80"}`}>
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                      <div>
+                        <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Timeline</div>
+                        <div className={`mt-1 text-sm ${subText}`}>{tripDates.length} trip days</div>
+                      </div>
+                      <div className={`inline-flex w-fit rounded-2xl p-1 ring-1 ${isDarkUI ? "bg-black/15 ring-white/10" : "bg-white ring-black/5"}`}>
+                        <button
+                          type="button"
+                          onClick={() => setShowVisitDaysOnly(true)}
+                          className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
+                            showVisitDaysOnly ? (isDarkUI ? "bg-white text-black" : "bg-slate-900 text-white") : subText
+                          }`}
+                        >
+                          Visit days
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowVisitDaysOnly(false)}
+                          className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
+                            !showVisitDaysOnly ? (isDarkUI ? "bg-white text-black" : "bg-slate-900 text-white") : subText
+                          }`}
+                        >
+                          All days
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className={`h-4 w-4 rounded-md border-2 border-dashed ${isDarkUI ? "border-violet-300 bg-violet-400/25" : "border-violet-500 bg-violet-100"}`}></span>
-                      <span>10 Year Historical Average</span>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="h-4 w-4 rounded-md border-2 border-emerald-300 bg-transparent"></span>
-                      <span>Scheduled stop</span>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className={`h-4 w-4 rounded-md border ${isDarkUI ? "border-amber-300/60 bg-amber-500/25" : "border-amber-300 bg-amber-100"}`}></span>
-                      <span>Weather risk</span>
+                    <div className={`flex flex-wrap items-center gap-3 text-xs ${subText}`}>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`h-4 w-4 rounded-md border ${isDarkUI ? "border-white/45 bg-white/5" : "border-slate-500 bg-white"}`}></span>
+                        <span>10-day Forecast</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`h-4 w-4 rounded-md border-2 border-dashed ${isDarkUI ? "border-violet-300 bg-violet-400/25" : "border-violet-500 bg-violet-100"}`}></span>
+                        <span>10 Year Historical Average</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="h-4 w-4 rounded-md border-2 border-emerald-300 bg-transparent"></span>
+                        <span>Scheduled stop</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`h-4 w-4 rounded-md border ${isDarkUI ? "border-amber-300/60 bg-amber-500/25" : "border-amber-300 bg-amber-100"}`}></span>
+                        <span>Weather risk</span>
+                      </div>
                     </div>
                   </div>
                   <div className="overflow-x-auto">
@@ -2287,6 +2316,7 @@
 	                                const typicalState = typicalByLocationDate[`${location.id}:${date}`];
 	                                const cell = tripCellFromForecast({ forecast: forecastState?.data, typical: typicalState?.data, location, date });
 	                                const isHere = cell.isUserThere;
+	                                const hideOffVisitWeather = showVisitDaysOnly && !isHere;
 	                                const riskClass =
 	                                  cell.status === "typical"
 	                                    ? isDarkUI
@@ -2306,11 +2336,19 @@
                                 return (
                                   <td key={`${location.id}:${date}`} className={`border-l border-t p-2 align-top ${isDarkUI ? "border-white/10" : "border-black/5"}`}>
                                     <div
-                                      className={`min-h-[116px] rounded-2xl border p-3 text-sm ${riskClass} ${
-                                        isHere ? (isDarkUI ? "ring-2 ring-emerald-300/40" : "ring-2 ring-emerald-300") : cell.status === "typical" ? "" : "opacity-75"
+                                      className={`min-h-[116px] rounded-2xl border p-3 text-sm ${
+                                        hideOffVisitWeather
+                                          ? isDarkUI
+                                            ? "border-white/10 bg-white/[0.03]"
+                                            : "border-black/5 bg-slate-50"
+                                          : riskClass
+                                      } ${
+                                        isHere ? (isDarkUI ? "ring-2 ring-emerald-300/40" : "ring-2 ring-emerald-300") : cell.status === "typical" || hideOffVisitWeather ? "" : "opacity-75"
                                       }`}
                                     >
-                                      {cell.status === "available" ? (
+                                      {hideOffVisitWeather ? (
+                                        <div className={`flex min-h-[88px] items-center justify-center text-xs ${subText}`}>—</div>
+                                      ) : cell.status === "available" ? (
 	                                        <>
 	                                          <div className="flex items-center justify-between gap-2">
 	                                            <div className="text-lg font-semibold">{formatTemp(cell.highTemp)} / {formatTemp(cell.lowTemp)}</div>
