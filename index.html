@@ -387,6 +387,7 @@
 
       const WEATHERHOP_TRIPS_STORAGE_KEY = "weatherhop-trips";
       const TRIP_FORECAST_CACHE_MS = 45 * 60 * 1000;
+      const TRIP_FORECAST_CACHE_VERSION = "v2";
       const TRIP_TYPICAL_CACHE_MS = 14 * 24 * 60 * 60 * 1000;
       const TRIP_TYPICAL_YEARS = 10;
 
@@ -527,11 +528,124 @@
       }
 
       function tripForecastCacheKey(lat, lon) {
-        return `weatherhop-trip-forecast-${Number(lat).toFixed(4)}-${Number(lon).toFixed(4)}`;
+        return `weatherhop-trip-forecast-${TRIP_FORECAST_CACHE_VERSION}-${Number(lat).toFixed(4)}-${Number(lon).toFixed(4)}`;
       }
 
       function tripTypicalCacheKey(lat, lon, monthDay) {
         return `weatherhop-trip-typical-${Number(lat).toFixed(4)}-${Number(lon).toFixed(4)}-${monthDay}`;
+      }
+
+      async function fetchNwsTripDailyHighs({ lat, lon }) {
+        try {
+          const pointRes = await fetch(`https://api.weather.gov/points/${lat},${lon}`, {
+            headers: { accept: "application/geo+json" },
+          });
+          if (!pointRes.ok) return null;
+          const pointJson = await readJsonResponse(pointRes, "NWS trip point lookup");
+          const forecastUrl = pointJson?.properties?.forecast;
+          if (!forecastUrl) return null;
+
+          const forecastRes = await fetch(forecastUrl, {
+            headers: { accept: "application/geo+json" },
+          });
+          if (!forecastRes.ok) return null;
+          const forecastJson = await readJsonResponse(forecastRes, "NWS trip forecast");
+          const highsByDate = {};
+
+          (forecastJson?.properties?.periods ?? []).forEach((period) => {
+            if (!period?.isDaytime || !period?.startTime) return;
+            const temp = Number(period.temperature);
+            if (Number.isFinite(temp)) highsByDate[String(period.startTime).slice(0, 10)] = temp;
+          });
+
+          return highsByDate;
+        } catch (e) {
+          console.warn("NWS trip forecast cross-check failed", e);
+          return null;
+        }
+      }
+
+      async function fetchTripModelDailyHighs({ lat, lon, model }) {
+        const params = new URLSearchParams({
+          latitude: String(lat),
+          longitude: String(lon),
+          timezone: "auto",
+          temperature_unit: "fahrenheit",
+          forecast_days: "10",
+          models: model,
+          daily: "temperature_2m_max",
+        });
+        try {
+          const modelWeather = await fetchWeatherForecast(params, `${model} trip forecast cross-check`);
+          const highsByDate = {};
+          (modelWeather?.daily?.time ?? []).forEach((date, idx) => {
+            const temp = Number(modelWeather?.daily?.temperature_2m_max?.[idx]);
+            if (Number.isFinite(temp)) highsByDate[date] = temp;
+          });
+          return highsByDate;
+        } catch (e) {
+          console.warn(`${model} trip forecast cross-check failed`, e);
+          return null;
+        }
+      }
+
+      function medianNumber(values) {
+        const nums = values.map(Number).filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+        if (!nums.length) return null;
+        const mid = Math.floor(nums.length / 2);
+        return nums.length % 2 ? nums[mid] : (nums[mid - 1] + nums[mid]) / 2;
+      }
+
+      function applyTripDailyHighConsensusGuard(weather, highChecksBySource) {
+        const dates = weather?.daily?.time ?? [];
+        const highs = weather?.daily?.temperature_2m_max ?? [];
+        if (!dates.length || !highs.length || !highChecksBySource?.length) return weather;
+
+        const adjustedHighs = [...highs];
+        const highSources = Array(dates.length).fill("");
+        const adjustments = [];
+
+        dates.forEach((date, idx) => {
+          const openMeteoHigh = Number(highs[idx]);
+          if (!Number.isFinite(openMeteoHigh)) return;
+
+          const checkedHighs = highChecksBySource
+            .map(({ source, highsByDate }) => ({
+              source,
+              high: Number(highsByDate?.[date]),
+            }))
+            .filter(({ high }) => Number.isFinite(high));
+          if (!checkedHighs.length) return;
+
+          const consensusHigh = medianNumber(checkedHighs.map(({ high }) => high));
+          if (!Number.isFinite(consensusHigh)) return;
+
+          const isHotDay = openMeteoHigh >= 95 || consensusHigh >= 95;
+          const rawDifference = Math.abs(openMeteoHigh - consensusHigh);
+          const displayedDifference = Math.abs(Math.round(openMeteoHigh) - Math.round(consensusHigh));
+          const isHighOutlier = openMeteoHigh >= 105 && openMeteoHigh > consensusHigh && rawDifference >= 2.5;
+          const isMeaningfulDifference = rawDifference >= 4 || displayedDifference >= 4 || isHighOutlier;
+          if (!isHotDay || !isMeaningfulDifference) return;
+
+          adjustedHighs[idx] = consensusHigh;
+          highSources[idx] = "NWS+";
+          adjustments.push({ date, openMeteoHigh, consensusHigh, checkedHighs });
+        });
+
+        if (!adjustments.length) return weather;
+
+        return {
+          ...weather,
+          daily: {
+            ...weather.daily,
+            temperature_2m_max: adjustedHighs,
+            weatherhop_temperature_2m_max_source: highSources,
+          },
+          weatherhopQuality: {
+            ...(weather.weatherhopQuality ?? {}),
+            tripDailyHighConsensusAdjustments: adjustments,
+          },
+        };
       }
 
       async function fetchTripForecast({ lat, lon }) {
@@ -554,7 +668,17 @@
           daily:
             "temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,windspeed_10m_max,weathercode",
         });
-        const data = await fetchWeatherForecast(params, "Trip forecast");
+        const [rawData, nwsHighsByDate, ecmwfHighsByDate, gemHighsByDate] = await Promise.all([
+          fetchWeatherForecast(params, "Trip forecast"),
+          fetchNwsTripDailyHighs({ lat, lon }),
+          fetchTripModelDailyHighs({ lat, lon, model: "ecmwf_ifs025" }),
+          fetchTripModelDailyHighs({ lat, lon, model: "gem_seamless" }),
+        ]);
+        const data = applyTripDailyHighConsensusGuard(rawData, [
+          { source: "NWS", highsByDate: nwsHighsByDate },
+          { source: "ECMWF", highsByDate: ecmwfHighsByDate },
+          { source: "GEM", highsByDate: gemHighsByDate },
+        ]);
         try {
           localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), data }));
         } catch {}
@@ -2534,13 +2658,15 @@
 
         function handleCloudTripsChange(nextTrips) {
           if (!currentUserId) return;
-          const snapshot = JSON.stringify(nextTrips ?? []);
+          const normalizedTrips = (nextTrips ?? []).map(normalizeTrip);
+          setCloudTrips(normalizedTrips);
+          const snapshot = JSON.stringify(normalizedTrips);
           if (snapshot === cloudTripsRef.current) return;
           cloudTripsRef.current = snapshot;
           if (cloudSaveTimer) clearTimeout(cloudSaveTimer);
           const timer = setTimeout(() => {
             setCloudStatus("Saving...");
-            saveCloudTrips(currentUserId, nextTrips)
+            saveCloudTrips(currentUserId, normalizedTrips)
               .then(() => setCloudStatus("Synced"))
               .catch((e) => {
                 console.error(e);
