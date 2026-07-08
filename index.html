@@ -2710,6 +2710,80 @@
           };
         }
 
+        async function fetchNwsDailyHighs({ lat, lon }) {
+          try {
+            const pointRes = await fetch(`https://api.weather.gov/points/${lat},${lon}`, {
+              headers: { accept: "application/geo+json" },
+            });
+            if (!pointRes.ok) return null;
+            const pointJson = await readJsonResponse(pointRes, "NWS point lookup");
+            const forecastUrl = pointJson?.properties?.forecast;
+            if (!forecastUrl) return null;
+
+            const forecastRes = await fetch(forecastUrl, {
+              headers: { accept: "application/geo+json" },
+            });
+            if (!forecastRes.ok) return null;
+            const forecastJson = await readJsonResponse(forecastRes, "NWS forecast");
+            const highsByDate = {};
+
+            (forecastJson?.properties?.periods ?? []).forEach((period) => {
+              if (!period?.isDaytime || !period?.startTime) return;
+              const temp = Number(period.temperature);
+              if (!Number.isFinite(temp)) return;
+              highsByDate[String(period.startTime).slice(0, 10)] = temp;
+            });
+
+            return highsByDate;
+          } catch (e) {
+            console.warn("NWS forecast cross-check failed", e);
+            return null;
+          }
+        }
+
+        function applyNwsDailyHighGuard(weather, nwsHighsByDate) {
+          const dates = weather?.daily?.time ?? [];
+          const highs = weather?.daily?.temperature_2m_max ?? [];
+          if (!dates.length || !highs.length || !nwsHighsByDate) return weather;
+
+          const adjustedHighs = [...highs];
+          const highSources = Array(dates.length).fill("");
+          const adjustments = [];
+
+          dates.forEach((date, idx) => {
+            const openMeteoHigh = Number(highs[idx]);
+            const nwsHigh = Number(nwsHighsByDate[date]);
+            if (!Number.isFinite(openMeteoHigh) || !Number.isFinite(nwsHigh)) return;
+
+            const isHotDay = openMeteoHigh >= 95 || nwsHigh >= 95;
+            const isMeaningfulDifference = Math.abs(openMeteoHigh - nwsHigh) >= 5;
+            if (!isHotDay || !isMeaningfulDifference) return;
+
+            adjustedHighs[idx] = nwsHigh;
+            highSources[idx] = "NWS";
+            adjustments.push({
+              date,
+              openMeteoHigh,
+              nwsHigh,
+            });
+          });
+
+          if (!adjustments.length) return weather;
+
+          return {
+            ...weather,
+            daily: {
+              ...weather.daily,
+              temperature_2m_max: adjustedHighs,
+              weatherhop_temperature_2m_max_source: highSources,
+            },
+            weatherhopQuality: {
+              ...(weather.weatherhopQuality ?? {}),
+              nwsDailyHighAdjustments: adjustments,
+            },
+          };
+        }
+
         async function fetchOpenMeteo({ lat, lon }) {
           const params = new URLSearchParams({
             latitude: String(lat),
@@ -2725,7 +2799,12 @@
             current: "temperature_2m,relative_humidity_2m,wind_speed_10m",
           });
 
-          return await fetchWeatherForecast(params, "Weather forecast");
+          const [weather, nwsHighsByDate] = await Promise.all([
+            fetchWeatherForecast(params, "Weather forecast"),
+            fetchNwsDailyHighs({ lat, lon }),
+          ]);
+
+          return applyNwsDailyHighGuard(weather, nwsHighsByDate);
         }
 
         async function fetchPollen({ lat, lon }) {
@@ -3282,6 +3361,7 @@
             code: daily?.weathercode?.[i],
             sunrise: daily?.sunrise?.[i],
             sunset: daily?.sunset?.[i],
+            highSource: daily?.weatherhop_temperature_2m_max_source?.[i] || "",
           }));
 
           const highs = tenDay.map((d) => Number(d.high)).filter((v) => Number.isFinite(v));
@@ -4950,7 +5030,10 @@
 	                                  ></div>
 	                                </div>
 	                              </div>
-	                              <div className="w-12 shrink-0 text-right text-2xl font-semibold">{formatTemp(d.high)}</div>
+	                              <div className="w-14 shrink-0 text-right">
+	                                <div className="text-2xl font-semibold leading-none">{formatTemp(d.high)}</div>
+	                                {d.highSource ? <div className={`mt-1 text-[10px] font-semibold uppercase leading-none ${subText}`}>{d.highSource}</div> : null}
+	                              </div>
 	                            </button>
 
 	                            {isExpanded ? (
@@ -5068,7 +5151,10 @@
                         <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3">
                           <div>
                             <div className={`text-[11px] font-semibold uppercase tracking-wide ${subText}`}>High</div>
-                            <div className="mt-1 text-lg font-semibold">{formatTemp(d.high)}</div>
+                            <div className="mt-1 flex items-center gap-2">
+                              <span className="text-lg font-semibold">{formatTemp(d.high)}</span>
+                              {d.highSource ? <span className={`text-[10px] font-semibold uppercase ${subText}`}>{d.highSource}</span> : null}
+                            </div>
                           </div>
                           <div>
                             <div className={`text-[11px] font-semibold uppercase tracking-wide ${subText}`}>Low</div>
@@ -5186,7 +5272,10 @@
 	                              <td className={`px-3 py-3 text-sm ${isDarkUI ? "text-slate-200" : "text-slate-700"}`}>
 	                                {condition.label}
 	                              </td>
-	                              <td className="px-3 py-3 text-sm font-semibold">{formatTemp(d.high)}</td>
+	                              <td className="px-3 py-3 text-sm font-semibold">
+	                                <span>{formatTemp(d.high)}</span>
+	                                {d.highSource ? <span className={`ml-2 text-[10px] font-semibold uppercase ${subText}`}>{d.highSource}</span> : null}
+	                              </td>
 	                              <td className="px-3 py-3 text-sm font-semibold">{formatTemp(d.low)}</td>
 	                              <td className="px-3 py-3 text-sm">{formatPct(d.humidMax)}</td>
 	                              <td className="px-3 py-3 text-sm">{formatPct(d.precipProb)}</td>
