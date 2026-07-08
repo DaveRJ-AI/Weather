@@ -2741,10 +2741,41 @@
           }
         }
 
-        function applyNwsDailyHighGuard(weather, nwsHighsByDate) {
+        async function fetchOpenMeteoDailyHighsByModel({ lat, lon, model }) {
+          try {
+            const params = new URLSearchParams({
+              latitude: String(lat),
+              longitude: String(lon),
+              timezone: "auto",
+              temperature_unit: "fahrenheit",
+              forecast_days: "10",
+              models: model,
+              daily: "temperature_2m_max",
+            });
+            const modelWeather = await fetchWeatherForecast(params, `${model} forecast cross-check`);
+            const highsByDate = {};
+            (modelWeather?.daily?.time ?? []).forEach((date, idx) => {
+              const temp = Number(modelWeather?.daily?.temperature_2m_max?.[idx]);
+              if (Number.isFinite(temp)) highsByDate[date] = temp;
+            });
+            return highsByDate;
+          } catch (e) {
+            console.warn(`${model} forecast cross-check failed`, e);
+            return null;
+          }
+        }
+
+        function median(values) {
+          const nums = values.map(Number).filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+          if (!nums.length) return null;
+          const mid = Math.floor(nums.length / 2);
+          return nums.length % 2 ? nums[mid] : (nums[mid - 1] + nums[mid]) / 2;
+        }
+
+        function applyDailyHighConsensusGuard(weather, highChecksBySource) {
           const dates = weather?.daily?.time ?? [];
           const highs = weather?.daily?.temperature_2m_max ?? [];
-          if (!dates.length || !highs.length || !nwsHighsByDate) return weather;
+          if (!dates.length || !highs.length || !highChecksBySource?.length) return weather;
 
           const adjustedHighs = [...highs];
           const highSources = Array(dates.length).fill("");
@@ -2752,21 +2783,32 @@
 
           dates.forEach((date, idx) => {
             const openMeteoHigh = Number(highs[idx]);
-            const nwsHigh = Number(nwsHighsByDate[date]);
-            if (!Number.isFinite(openMeteoHigh) || !Number.isFinite(nwsHigh)) return;
+            if (!Number.isFinite(openMeteoHigh)) return;
 
-            const isHotDay = openMeteoHigh >= 95 || nwsHigh >= 95;
-            const rawDifference = Math.abs(openMeteoHigh - nwsHigh);
-            const displayedDifference = Math.abs(Math.round(openMeteoHigh) - Math.round(nwsHigh));
+            const checkedHighs = highChecksBySource
+              .map(({ source, highsByDate }) => ({
+                source,
+                high: Number(highsByDate?.[date]),
+              }))
+              .filter(({ high }) => Number.isFinite(high));
+            if (checkedHighs.length < 2) return;
+
+            const consensusHigh = median(checkedHighs.map(({ high }) => high));
+            if (!Number.isFinite(consensusHigh)) return;
+
+            const isHotDay = openMeteoHigh >= 95 || consensusHigh >= 95;
+            const rawDifference = Math.abs(openMeteoHigh - consensusHigh);
+            const displayedDifference = Math.abs(Math.round(openMeteoHigh) - Math.round(consensusHigh));
             const isMeaningfulDifference = rawDifference >= 4 || displayedDifference >= 4;
             if (!isHotDay || !isMeaningfulDifference) return;
 
-            adjustedHighs[idx] = nwsHigh;
-            highSources[idx] = "NWS";
+            adjustedHighs[idx] = consensusHigh;
+            highSources[idx] = "NWS+";
             adjustments.push({
               date,
               openMeteoHigh,
-              nwsHigh,
+              consensusHigh,
+              checkedHighs,
             });
           });
 
@@ -2781,7 +2823,7 @@
             },
             weatherhopQuality: {
               ...(weather.weatherhopQuality ?? {}),
-              nwsDailyHighAdjustments: adjustments,
+              dailyHighConsensusAdjustments: adjustments,
             },
           };
         }
@@ -2801,12 +2843,18 @@
             current: "temperature_2m,relative_humidity_2m,wind_speed_10m",
           });
 
-          const [weather, nwsHighsByDate] = await Promise.all([
+          const [weather, nwsHighsByDate, ecmwfHighsByDate, gemHighsByDate] = await Promise.all([
             fetchWeatherForecast(params, "Weather forecast"),
             fetchNwsDailyHighs({ lat, lon }),
+            fetchOpenMeteoDailyHighsByModel({ lat, lon, model: "ecmwf_ifs025" }),
+            fetchOpenMeteoDailyHighsByModel({ lat, lon, model: "gem_seamless" }),
           ]);
 
-          return applyNwsDailyHighGuard(weather, nwsHighsByDate);
+          return applyDailyHighConsensusGuard(weather, [
+            { source: "NWS", highsByDate: nwsHighsByDate },
+            { source: "ECMWF", highsByDate: ecmwfHighsByDate },
+            { source: "GEM", highsByDate: gemHighsByDate },
+          ]);
         }
 
         async function fetchPollen({ lat, lon }) {
