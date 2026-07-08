@@ -470,8 +470,12 @@
           ...base,
           ...trip,
           locations: Array.isArray(trip?.locations) ? trip.locations : [],
-          updatedAt: new Date().toISOString(),
+          updatedAt: trip?.updatedAt || base.updatedAt,
         };
+      }
+
+      function touchTrip(trip) {
+        return normalizeTrip({ ...trip, updatedAt: new Date().toISOString() });
       }
 
       function cloudTripToLocal(row, stops = []) {
@@ -1752,7 +1756,7 @@
             prev.map((trip) => {
               if (trip.id !== selectedTrip.id) return trip;
               const patch = typeof patchOrUpdater === "function" ? patchOrUpdater(trip) : patchOrUpdater;
-              return normalizeTrip({ ...trip, ...patch });
+              return touchTrip({ ...trip, ...patch });
             })
           );
         }
@@ -2662,10 +2666,10 @@
         function handleCloudTripsChange(nextTrips) {
           if (!currentUserId) return;
           const normalizedTrips = (nextTrips ?? []).map(normalizeTrip);
-          setCloudTrips(normalizedTrips);
           const snapshot = JSON.stringify(normalizedTrips);
           if (snapshot === cloudTripsRef.current) return;
           cloudTripsRef.current = snapshot;
+          setCloudTrips(normalizedTrips);
           if (cloudSaveTimer) clearTimeout(cloudSaveTimer);
           const timer = setTimeout(() => {
             setCloudStatus("Saving...");
