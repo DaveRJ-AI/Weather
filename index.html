@@ -2756,7 +2756,9 @@
             if (!Number.isFinite(openMeteoHigh) || !Number.isFinite(nwsHigh)) return;
 
             const isHotDay = openMeteoHigh >= 95 || nwsHigh >= 95;
-            const isMeaningfulDifference = Math.abs(openMeteoHigh - nwsHigh) >= 5;
+            const rawDifference = Math.abs(openMeteoHigh - nwsHigh);
+            const displayedDifference = Math.abs(Math.round(openMeteoHigh) - Math.round(nwsHigh));
+            const isMeaningfulDifference = rawDifference >= 4 || displayedDifference >= 4;
             if (!isHotDay || !isMeaningfulDifference) return;
 
             adjustedHighs[idx] = nwsHigh;
