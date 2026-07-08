@@ -1727,6 +1727,9 @@
               onTripsChange(trips);
             }
           }
+        }, [trips, tripScope, cloudTripsLoaded, onTripsChange]);
+
+        useEffect(() => {
           if (trips.length && !trips.some((trip) => trip.id === selectedTripId)) {
             setSelectedTripId(trips[0].id);
           }
@@ -2031,7 +2034,7 @@
               <div className="flex flex-wrap items-center gap-2">
                 <select
                   className={`${inputClass} min-w-[210px]`}
-                  value={selectedTrip?.id ?? ""}
+                  value={selectedTripId}
                   onChange={(e) => setSelectedTripId(e.target.value)}
                   disabled={!trips.length}
                 >
