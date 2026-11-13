@@ -2436,7 +2436,6 @@
       function WeatherApp() {
         const USE_CURRENT_LOCATION_KEY = "weatherhop-use-current-location";
         const CURRENT_LOCATION_CACHE_KEY = "weatherhop-current-location-cache";
-        const CURRENT_LOCATION_CACHE_MS = 30 * 60 * 1000;
         const ACCOUNT_PROMPT_SEEN_KEY = "weatherhop-account-prompt-seen";
         const INSTALL_WELCOME_SEEN_KEY = "weatherhop-install-welcome-seen";
 
@@ -3422,8 +3421,7 @@
         function readCachedCurrentLocation() {
           try {
             const cached = JSON.parse(localStorage.getItem(CURRENT_LOCATION_CACHE_KEY) || "null");
-            if (!cached?.location || !cached?.savedAt) return null;
-            if (Date.now() - Number(cached.savedAt) > CURRENT_LOCATION_CACHE_MS) return null;
+            if (!cached?.location) return null;
             const lat = Number(cached.location.lat);
             const lon = Number(cached.location.lon);
             if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
@@ -3454,7 +3452,7 @@
             if (cachedLocation) {
               setZip(null);
               setActiveLocation(cachedLocation);
-              setLocationStatus("Using recent current location.");
+              setLocationStatus("Using your saved location. Tap the location button to update it.");
               setRequestingLocation(false);
               return;
             }
