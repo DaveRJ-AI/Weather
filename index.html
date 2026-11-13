@@ -2438,6 +2438,8 @@
         const CURRENT_LOCATION_CACHE_KEY = "weatherhop-current-location-cache";
         const ACCOUNT_PROMPT_SEEN_KEY = "weatherhop-account-prompt-seen";
         const INSTALL_WELCOME_SEEN_KEY = "weatherhop-install-welcome-seen";
+        const INSTALL_CONFIRMED_KEY = "weatherhop-install-confirmed";
+        const INSTALL_DISMISSED_KEY = "weatherhop-install-dismissed";
 
         // Favorites state (persistent)
         const [favorites, setFavorites] = useState([]);
@@ -2469,10 +2471,20 @@
 	        const deferredInstallPromptRef = useRef(null);
 	        const currentUserId = authSession?.user?.id ?? null;
 	        const tripScope = currentUserId ? `user-${currentUserId}` : "local";
-          const [showInstall, setShowInstall] = useState(() => window.location.pathname.replace(/\/$/, "") === "/install");
           const [canNativeInstall, setCanNativeInstall] = useState(false);
           const [isInstalled, setIsInstalled] = useState(
-            () => window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true
+            () =>
+              window.matchMedia("(display-mode: standalone)").matches ||
+              window.navigator.standalone === true ||
+              localStorage.getItem(INSTALL_CONFIRMED_KEY) === "true" ||
+              localStorage.getItem(INSTALL_WELCOME_SEEN_KEY) === "true"
+          );
+          const [showInstall, setShowInstall] = useState(
+            () =>
+              window.location.pathname.replace(/\/$/, "") === "/install" &&
+              localStorage.getItem(INSTALL_CONFIRMED_KEY) !== "true" &&
+              localStorage.getItem(INSTALL_WELCOME_SEEN_KEY) !== "true" &&
+              localStorage.getItem(INSTALL_DISMISSED_KEY) !== "true"
           );
           const [installNotice, setInstallNotice] = useState("");
 
@@ -2536,6 +2548,12 @@
         }, []);
 
         useEffect(() => {
+          if (window.location.pathname.replace(/\/$/, "") === "/install") {
+            window.history.replaceState({}, "", "/");
+          }
+        }, []);
+
+        useEffect(() => {
           const displayMode = window.matchMedia("(display-mode: standalone)");
           const onInstallPrompt = (event) => {
             event.preventDefault();
@@ -2548,6 +2566,8 @@
             setIsInstalled(true);
             setShowInstall(false);
             setInstallNotice("WeatherHop is installed and ready from your Home Screen.");
+            localStorage.setItem(INSTALL_CONFIRMED_KEY, "true");
+            localStorage.removeItem(INSTALL_DISMISSED_KEY);
             localStorage.setItem(INSTALL_WELCOME_SEEN_KEY, "true");
           };
           const onDisplayModeChange = (event) => setIsInstalled(event.matches || window.navigator.standalone === true);
@@ -2557,6 +2577,8 @@
           displayMode.addEventListener?.("change", onDisplayModeChange);
 
           if ((displayMode.matches || window.navigator.standalone === true) && localStorage.getItem(INSTALL_WELCOME_SEEN_KEY) !== "true") {
+            localStorage.setItem(INSTALL_CONFIRMED_KEY, "true");
+            localStorage.removeItem(INSTALL_DISMISSED_KEY);
             setInstallNotice("WeatherHop is installed and ready from your Home Screen.");
             localStorage.setItem(INSTALL_WELCOME_SEEN_KEY, "true");
           }
@@ -2576,6 +2598,7 @@
 
         async function requestInstall() {
           setShowAccountPrompt(false);
+          localStorage.removeItem(INSTALL_DISMISSED_KEY);
           const promptEvent = deferredInstallPromptRef.current;
           if (!promptEvent) {
             setShowInstall(true);
@@ -2586,6 +2609,11 @@
           deferredInstallPromptRef.current = null;
           setCanNativeInstall(false);
           if (choice?.outcome !== "accepted") setShowInstall(true);
+        }
+
+        function dismissInstallOnDevice() {
+          localStorage.setItem(INSTALL_DISMISSED_KEY, "true");
+          setShowInstall(false);
         }
 
         async function shareInstallLink() {
@@ -4511,6 +4539,9 @@
 
                     <button type="button" onClick={shareInstallLink} className="mt-5 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow">
                       Share install link
+                    </button>
+                    <button type="button" onClick={dismissInstallOnDevice} className="mt-2 w-full px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900">
+                      Not on this device
                     </button>
                   </div>
                 </div>
