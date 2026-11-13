@@ -170,6 +170,7 @@
           label: "Logan 84341",
         },
       ];
+      const WEATHERHOP_INSTALL_URL = "https://weatherhop.com/install";
 
       function weatherLocationOverride(lat, lon) {
         return WEATHER_LOCATION_OVERRIDES.find((override) => {
@@ -2437,6 +2438,7 @@
         const CURRENT_LOCATION_CACHE_KEY = "weatherhop-current-location-cache";
         const CURRENT_LOCATION_CACHE_MS = 30 * 60 * 1000;
         const ACCOUNT_PROMPT_SEEN_KEY = "weatherhop-account-prompt-seen";
+        const INSTALL_WELCOME_SEEN_KEY = "weatherhop-install-welcome-seen";
 
         // Favorites state (persistent)
         const [favorites, setFavorites] = useState([]);
@@ -2465,8 +2467,20 @@
 	        const [cloudSaveTimer, setCloudSaveTimer] = useState(null);
 	        const cloudTripsRef = useRef(null);
 	        const cloudFavoritesRef = useRef(null);
+	        const deferredInstallPromptRef = useRef(null);
 	        const currentUserId = authSession?.user?.id ?? null;
 	        const tripScope = currentUserId ? `user-${currentUserId}` : "local";
+          const [showInstall, setShowInstall] = useState(() => window.location.pathname.replace(/\/$/, "") === "/install");
+          const [canNativeInstall, setCanNativeInstall] = useState(false);
+          const [isInstalled, setIsInstalled] = useState(
+            () => window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true
+          );
+          const [installNotice, setInstallNotice] = useState("");
+
+          const isIosDevice = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+            (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+          const isMobileDevice = isIosDevice || /Android|Mobile/i.test(navigator.userAgent);
+          const isSafariBrowser = /Safari/i.test(navigator.userAgent) && !/CriOS|FxiOS|EdgiOS|OPiOS/i.test(navigator.userAgent);
 
         // Favorites selection (kept)
         const [zip, setZip] = useState(null);
@@ -2521,6 +2535,80 @@
             listener?.subscription?.unsubscribe?.();
           };
         }, []);
+
+        useEffect(() => {
+          const displayMode = window.matchMedia("(display-mode: standalone)");
+          const onInstallPrompt = (event) => {
+            event.preventDefault();
+            deferredInstallPromptRef.current = event;
+            setCanNativeInstall(true);
+          };
+          const onInstalled = () => {
+            deferredInstallPromptRef.current = null;
+            setCanNativeInstall(false);
+            setIsInstalled(true);
+            setShowInstall(false);
+            setInstallNotice("WeatherHop is installed and ready from your Home Screen.");
+            localStorage.setItem(INSTALL_WELCOME_SEEN_KEY, "true");
+          };
+          const onDisplayModeChange = (event) => setIsInstalled(event.matches || window.navigator.standalone === true);
+
+          window.addEventListener("beforeinstallprompt", onInstallPrompt);
+          window.addEventListener("appinstalled", onInstalled);
+          displayMode.addEventListener?.("change", onDisplayModeChange);
+
+          if ((displayMode.matches || window.navigator.standalone === true) && localStorage.getItem(INSTALL_WELCOME_SEEN_KEY) !== "true") {
+            setInstallNotice("WeatherHop is installed and ready from your Home Screen.");
+            localStorage.setItem(INSTALL_WELCOME_SEEN_KEY, "true");
+          }
+
+          return () => {
+            window.removeEventListener("beforeinstallprompt", onInstallPrompt);
+            window.removeEventListener("appinstalled", onInstalled);
+            displayMode.removeEventListener?.("change", onDisplayModeChange);
+          };
+        }, []);
+
+        useEffect(() => {
+          if (!installNotice) return;
+          const timeout = setTimeout(() => setInstallNotice(""), 5000);
+          return () => clearTimeout(timeout);
+        }, [installNotice]);
+
+        async function requestInstall() {
+          setShowAccountPrompt(false);
+          const promptEvent = deferredInstallPromptRef.current;
+          if (!promptEvent) {
+            setShowInstall(true);
+            return;
+          }
+          await promptEvent.prompt();
+          const choice = await promptEvent.userChoice;
+          deferredInstallPromptRef.current = null;
+          setCanNativeInstall(false);
+          if (choice?.outcome !== "accepted") setShowInstall(true);
+        }
+
+        async function shareInstallLink() {
+          if (navigator.share) {
+            try {
+              await navigator.share({
+                title: "WeatherHop",
+                text: "Install WeatherHop for quick, ad-free weather access.",
+                url: WEATHERHOP_INSTALL_URL,
+              });
+              return;
+            } catch (error) {
+              if (error?.name === "AbortError") return;
+            }
+          }
+          try {
+            await navigator.clipboard.writeText(WEATHERHOP_INSTALL_URL);
+            setInstallNotice("Install link copied.");
+          } catch {
+            setInstallNotice(WEATHERHOP_INSTALL_URL);
+          }
+        }
 
         async function loadCloudFavoritesAndSettings(userId) {
           if (!supabaseClient || !userId) return;
@@ -2715,10 +2803,14 @@
 
         useEffect(() => {
           if (!authReady || currentUserId) return;
+          if (showInstall || window.location.pathname.replace(/\/$/, "") === "/install") {
+            setShowAccountPrompt(false);
+            return;
+          }
           if (localStorage.getItem(ACCOUNT_PROMPT_SEEN_KEY) === "true") return;
           const timer = setTimeout(() => setShowAccountPrompt(true), 700);
           return () => clearTimeout(timer);
-        }, [authReady, currentUserId]);
+        }, [authReady, currentUserId, showInstall]);
 
         function dismissAccountPrompt() {
           localStorage.setItem(ACCOUNT_PROMPT_SEEN_KEY, "true");
@@ -4342,10 +4434,91 @@
                       <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-current bg-[#7AC943]"></span>
                     ) : null}
                   </button>
+	              {!isInstalled ? (
+	                <button
+	                  type="button"
+	                  onClick={requestInstall}
+	                  className={`flex h-10 w-10 items-center justify-center rounded-full shadow transition hover:opacity-90 active:scale-[0.99] ${
+	                    isDarkUI ? "bg-slate-200/20 text-white ring-1 ring-white/15" : "bg-white text-slate-900 ring-1 ring-black/5"
+	                  }`}
+	                  title="Install WeatherHop"
+	                  aria-label="Install WeatherHop"
+	                >
+	                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+	                    <path d="M12 3v12" />
+	                    <path d="m7 10 5 5 5-5" />
+	                    <path d="M5 21h14" />
+	                  </svg>
+	                </button>
+	              ) : null}
 	              </div>
               </div>
 
-              {showAccountPrompt && !showAccount && !currentUserId ? (
+              {installNotice ? (
+                <div className="fixed inset-x-4 top-4 z-[160] mx-auto max-w-md rounded-2xl bg-slate-950 px-4 py-3 text-center text-sm font-semibold text-white shadow-[0_16px_40px_rgba(0,0,0,0.30)]">
+                  {installNotice}
+                </div>
+              ) : null}
+
+              {showInstall && !isInstalled ? (
+                <div className="fixed inset-0 z-[150] flex items-end justify-center bg-black/60 sm:items-center">
+                  <div className={`max-h-[92vh] w-full overflow-y-auto rounded-t-3xl border p-5 shadow-[0_20px_50px_rgba(0,0,0,0.30)] sm:mx-4 sm:max-w-md sm:rounded-3xl sm:p-6 ${
+                    isDarkUI ? "border-slate-300/25 bg-slate-100 text-slate-950" : "border-black/5 bg-white text-slate-900"
+                  }`}>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <img src="./apple-touch-icon.png" alt="" className="h-12 w-12 shrink-0 rounded-xl" />
+                        <div>
+                          <div className="text-lg font-semibold">Install WeatherHop</div>
+                          <div className="mt-0.5 text-sm text-slate-600">Quick access from your Home Screen</div>
+                        </div>
+                      </div>
+                      <button type="button" onClick={() => setShowInstall(false)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xl text-slate-700" aria-label="Close install instructions" title="Close">×</button>
+                    </div>
+
+                    {canNativeInstall ? (
+                      <button type="button" onClick={requestInstall} className="mt-5 w-full rounded-2xl bg-[#7AC943] px-4 py-3 text-sm font-semibold text-slate-950 shadow">
+                        Install WeatherHop
+                      </button>
+                    ) : isIosDevice ? (
+                      <div className="mt-5 space-y-3">
+                        {!isSafariBrowser ? (
+                          <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900 ring-1 ring-amber-200">Open this page in Safari first.</div>
+                        ) : null}
+                        {[
+                          ["1", "Tap Safari’s Share button."],
+                          ["2", "Choose Add to Home Screen."],
+                          ["3", "Leave Open as Web App enabled, then tap Add."],
+                        ].map(([number, instruction]) => (
+                          <div key={number} className="flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 ring-1 ring-black/5">
+                            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#7AC943] text-sm font-bold text-slate-950">{number}</span>
+                            <span className="text-sm font-medium text-slate-800">{instruction}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : isMobileDevice ? (
+                      <div className="mt-5 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-medium text-slate-800 ring-1 ring-black/5">
+                        Open your browser menu and choose Install app or Add to Home Screen.
+                      </div>
+                    ) : null}
+
+                    {!isMobileDevice ? (
+                      <div className="mt-5 border-t border-slate-200 pt-5 text-center">
+                        <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Install on a phone</div>
+                        <img src="./weatherhop_install_qr.png" alt="QR code for weatherhop.com/install" className="mx-auto h-44 w-44 rounded-lg bg-white p-2 ring-1 ring-black/10" />
+                        <div className="mt-3 text-sm font-semibold">Scan with an iPhone or Android camera</div>
+                        <div className="mt-1 text-xs text-slate-600">The phone will open the installation steps.</div>
+                      </div>
+                    ) : null}
+
+                    <button type="button" onClick={shareInstallLink} className="mt-5 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow">
+                      Share install link
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {showAccountPrompt && !showInstall && !showAccount && !currentUserId ? (
                 <div className="fixed inset-0 z-[115] flex items-center justify-center bg-black/45">
                   <div
                     className={`mx-4 w-full max-w-md rounded-3xl border p-6 shadow-[0_20px_50px_rgba(0,0,0,0.30)] ${

@@ -1,10 +1,12 @@
-const CACHE_NAME = "weatherhop-shell-v16";
+const CACHE_NAME = "weatherhop-shell-v17";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./favicon.ico",
   "./weatherhop_frog_favicon.png",
   "./weatherhop_touch_icon.png",
+  "./weatherhop_icon_192.png",
+  "./weatherhop_install_qr.png",
   "./apple-touch-icon.png",
   "./weatherhop_logo_cropped_tight.png",
   "./manifest.webmanifest",
