@@ -146,6 +146,38 @@
         return `${Math.round(Number(n))} mph`;
       }
 
+      function distanceMiles(lat1, lon1, lat2, lon2) {
+        const values = [lat1, lon1, lat2, lon2].map(Number);
+        if (!values.every(Number.isFinite)) return null;
+        const toRadians = (degrees) => (degrees * Math.PI) / 180;
+        const [aLat, aLon, bLat, bLon] = values.map(toRadians);
+        const latDelta = bLat - aLat;
+        const lonDelta = bLon - aLon;
+        const haversine =
+          Math.sin(latDelta / 2) ** 2 +
+          Math.cos(aLat) * Math.cos(bLat) * Math.sin(lonDelta / 2) ** 2;
+        return 3958.8 * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+      }
+
+      const WEATHER_LOCATION_OVERRIDES = [
+        {
+          id: "logan-north-logan",
+          centerLat: 41.7615,
+          centerLon: -111.8147,
+          radiusMiles: 6,
+          weatherLat: 41.7759,
+          weatherLon: -111.8068,
+          label: "Logan 84341",
+        },
+      ];
+
+      function weatherLocationOverride(lat, lon) {
+        return WEATHER_LOCATION_OVERRIDES.find((override) => {
+          const milesAway = distanceMiles(lat, lon, override.centerLat, override.centerLon);
+          return milesAway !== null && milesAway <= override.radiusMiles;
+        }) || null;
+      }
+
       // Desired format: "Sat, Feb 21 2026"
       function formatDateLabel(isoDate) {
         try {
@@ -284,8 +316,13 @@
 
         const request = (async () => {
           if (shouldUseNetlifyWeatherProxy()) {
-            const proxied = await fetch(`/.netlify/functions/weather?${query}`);
-            const proxiedJson = await readJsonResponse(proxied, label);
+            let proxied = await fetch(`/.netlify/functions/weather?${query}`);
+            let proxiedJson = await readJsonResponse(proxied, label);
+            const isLocalNetlify = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+            if (!proxied.ok && isLocalNetlify) {
+              proxied = await fetch(`https://weatherhop.com/.netlify/functions/weather?${query}`);
+              proxiedJson = await readJsonResponse(proxied, label);
+            }
             if (!proxied.ok) throw new Error(proxiedJson?.error || `${label} failed (${proxied.status}).`);
             weatherForecastCache.set(query, { createdAt: Date.now(), data: proxiedJson });
             return proxiedJson;
@@ -2398,7 +2435,7 @@
       function WeatherApp() {
         const USE_CURRENT_LOCATION_KEY = "weatherhop-use-current-location";
         const CURRENT_LOCATION_CACHE_KEY = "weatherhop-current-location-cache";
-        const CURRENT_LOCATION_CACHE_MS = 6 * 60 * 60 * 1000;
+        const CURRENT_LOCATION_CACHE_MS = 30 * 60 * 1000;
         const ACCOUNT_PROMPT_SEEN_KEY = "weatherhop-account-prompt-seen";
 
         // Favorites state (persistent)
@@ -3142,6 +3179,19 @@
             }
 
             const label = loc.label ?? (loc.mode === "zip" ? zipLabels[loc.zip] ?? loc.zip : "Search");
+            let weatherLat = lat;
+            let weatherLon = lon;
+            let weatherSourceLabel = "";
+
+            if (loc.mode === "geo") {
+              const locationOverride = weatherLocationOverride(lat, lon);
+              if (locationOverride) {
+                weatherLat = locationOverride.weatherLat;
+                weatherLon = locationOverride.weatherLon;
+                weatherSourceLabel = locationOverride.label;
+              }
+            }
+
             if (weatherRequestRef.current !== requestId) return;
 
             setPlace({
@@ -3152,11 +3202,12 @@
               lon,
               label,
               mode: loc.mode,
+              weatherSourceLabel,
             });
 
             refreshOutdoorHealth({ lat, lon });
 
-            const wx = await fetchOpenMeteo({ lat, lon });
+            const wx = await fetchOpenMeteo({ lat: weatherLat, lon: weatherLon });
             if (weatherRequestRef.current !== requestId) return;
 
             setError("");
@@ -3367,9 +3418,9 @@
               else setLoading(false);
             },
             {
-              enableHighAccuracy: false,
+              enableHighAccuracy: true,
               timeout: 8000,
-              maximumAge: 10 * 60 * 1000,
+              maximumAge: 0,
             }
           );
         }
@@ -3923,9 +3974,12 @@
           if (!favoritesNow || !Object.keys(favoritesNow).length) return [];
 
           return comparableFavorites
-            .map((fav) => makeFavoriteKey(fav))
-            .filter((key) => key && key !== selectedFavoriteKey)
-            .map((key) => {
+            .filter((fav) => {
+              const key = makeFavoriteKey(fav);
+              return key && key !== selectedFavoriteKey;
+            })
+            .map((fav) => {
+              const key = makeFavoriteKey(fav);
               const other = favoritesNow[key];
               const dt = Number(other?.temp) - Number(baseTemp);
               const dh = Number(other?.humidity) - Number(baseHum);
@@ -3937,6 +3991,7 @@
 
               return {
                 key,
+                favorite: fav,
                 zip: other?.zip ?? "",
                 label: other?.label ?? key,
                 city: other?.city ?? "",
@@ -3950,6 +4005,11 @@
               };
             });
         }, [comparableFavorites, favoritesNow, derived?.currentTemp, derived?.currentHumidity, utcOffsetSeconds, selectedFavoriteKey]);
+
+        function selectComparisonFavorite(row) {
+          if (!row?.favorite) return;
+          selectFavoriteOption(row.favorite);
+        }
 
         const comparisonEmptyMessage = useMemo(() => {
           const comparableCount = comparableFavorites.length;
@@ -4592,6 +4652,9 @@
                         ? "Loading…"
                         : "Search or use current location"}
                     </div>
+                    {place?.weatherSourceLabel ? (
+                      <div className={`mt-1 text-xs ${subText}`}>Forecast point: {place.weatherSourceLabel}</div>
+                    ) : null}
 
                     <div className="mt-3 flex flex-wrap items-center gap-2">
                       <button
@@ -5029,6 +5092,8 @@
                           ? `Pollen: ${formatPollenLevel(pollen.data.overall)}`
                           : pollen.error
                           ? "Pollen unavailable"
+                          : pollen.data
+                          ? "Pollen: no current report"
                           : "Select a location"}
                       </div>
                       {pollen.data?.dominantType ? (
@@ -5608,9 +5673,12 @@
                   ) : mobileComparisonCompact ? (
                     <div className={`overflow-hidden rounded-3xl ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}>
                       {(compareRows ?? []).map((r, idx) => (
-                        <div
+                        <button
                           key={r.key}
-                          className={`px-4 py-3 ${idx > 0 ? (isDarkUI ? "border-t border-white/10" : "border-t border-black/5") : ""}`}
+                          type="button"
+                          onClick={() => selectComparisonFavorite(r)}
+                          className={`block w-full px-4 py-3 text-left transition hover:opacity-80 ${idx > 0 ? (isDarkUI ? "border-t border-white/10" : "border-t border-black/5") : ""}`}
+                          title={`Use ${r.label} as the primary location`}
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
@@ -5624,14 +5692,17 @@
                               <div className={`text-xs font-semibold ${diffClass(r.dTemp)}`}>{formatDiff(r.dTemp, "temp")}</div>
                             </div>
                           </div>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   ) : (
                     (compareRows ?? []).map((r) => (
-                      <div
+                      <button
                         key={r.key}
-                        className={`rounded-3xl p-4 shadow-[0_10px_30px_rgba(0,0,0,0.08)] ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}
+                        type="button"
+                        onClick={() => selectComparisonFavorite(r)}
+                        className={`w-full rounded-3xl p-4 text-left shadow-[0_10px_30px_rgba(0,0,0,0.08)] ring-1 transition hover:opacity-80 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}
+                        title={`Use ${r.label} as the primary location`}
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div>
@@ -5668,7 +5739,7 @@
                         <div className={`mt-4 text-sm ${subText}`}>
                           Delta time <span className={`ml-1 font-semibold ${diffClass(r.dMins)}`}>{formatDiff(r.dMins, "time")}</span>
                         </div>
-                      </div>
+                      </button>
                     ))
                   )}
                 </div>
@@ -5691,7 +5762,17 @@
                         return (
                           <tr
                             key={r.key}
-                            className={`rounded-2xl ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}
+                            role="button"
+                            tabIndex="0"
+                            onClick={() => selectComparisonFavorite(r)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                selectComparisonFavorite(r);
+                              }
+                            }}
+                            title={`Use ${r.label} as the primary location`}
+                            className={`cursor-pointer rounded-2xl ring-1 transition hover:opacity-80 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-slate-50 ring-black/5"}`}
                           >
                             <td className="px-3 py-3 text-sm font-semibold">
                               {r.label}{" "}
