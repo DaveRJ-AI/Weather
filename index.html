@@ -425,7 +425,7 @@
 
       const WEATHERHOP_TRIPS_STORAGE_KEY = "weatherhop-trips";
       const TRIP_FORECAST_CACHE_MS = 45 * 60 * 1000;
-      const TRIP_FORECAST_CACHE_VERSION = "v2";
+      const TRIP_FORECAST_CACHE_VERSION = "v3";
       const TRIP_TYPICAL_CACHE_MS = 14 * 24 * 60 * 60 * 1000;
       const TRIP_TYPICAL_YEARS = 10;
 
@@ -708,7 +708,7 @@
           wind_speed_unit: "mph",
           forecast_days: "10",
           daily:
-            "temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,windspeed_10m_max,weathercode",
+            "temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,rain_sum,snowfall_sum,windspeed_10m_max,weathercode",
         });
         const [rawData, nwsHighsByDate, ecmwfHighsByDate, gemHighsByDate] = await Promise.all([
           fetchWeatherForecast(params, "Trip forecast"),
@@ -790,7 +790,13 @@
         const isUserThere = isUserAtLocationOnDate(location, date);
         if (idx >= 0) {
           const code = daily.weathercode?.[idx];
-          const condition = weatherCondition(code, daily.temperature_2m_min?.[idx]);
+          const condition = dailyWeatherCondition({
+            code,
+            high: daily.temperature_2m_max?.[idx],
+            low: daily.temperature_2m_min?.[idx],
+            rain: daily.rain_sum?.[idx],
+            snowfall: daily.snowfall_sum?.[idx],
+          });
           const precip = daily.precipitation_probability_max?.[idx];
           const wind = daily.windspeed_10m_max?.[idx];
           const high = daily.temperature_2m_max?.[idx];
@@ -968,6 +974,30 @@
         if (temp >= 40) return { label: "Rain / snow possible", icon: "🌦️" };
         if (temp >= 33) return { label: "Rain / snow mix", icon: "🌨️" };
         return { label, icon };
+      }
+
+      function dailyWeatherCondition({ code, high, low, rain, snowfall } = {}) {
+        const c = Number(code);
+        const snowDepth = Number(snowfall);
+        const rainTotal = Number(rain);
+        const isSnow = [71, 73, 75, 77, 85, 86].includes(c);
+
+        if (!isSnow) return weatherCondition(code, high ?? low);
+
+        const hasMeaningfulSnow = Number.isFinite(snowDepth) && snowDepth >= 0.1;
+        const hasMeaningfulRain = Number.isFinite(rainTotal) && rainTotal >= 0.05;
+        if (hasMeaningfulSnow && hasMeaningfulRain) {
+          return { label: "Rain / snow mix", icon: "🌨️" };
+        }
+        if (Number.isFinite(snowDepth)) {
+          if (snowDepth >= 6) return { label: "Heavy snow", icon: "🌨️" };
+          if (snowDepth >= 1) return { label: "Snow", icon: "🌨️" };
+          if (snowDepth >= 0.1) return { label: "Light snow", icon: "🌨️" };
+        }
+
+        // Daily codes report the worst hour, so use the daytime high as the
+        // fallback instead of an overnight low when accumulation is unavailable.
+        return weatherCondition(code, high ?? low);
       }
 
       function pick24hWindow(hourlyTimes) {
@@ -3166,8 +3196,8 @@
             wind_speed_unit: "mph",
             forecast_days: "10",
             daily:
-              "temperature_2m_max,temperature_2m_min,relative_humidity_2m_max,precipitation_sum,precipitation_probability_max,windspeed_10m_max,winddirection_10m_dominant,weathercode,sunrise,sunset",
-            hourly: "temperature_2m,relative_humidity_2m,dew_point_2m,cloud_cover,precipitation_probability,wind_speed_10m,weathercode",
+              "temperature_2m_max,temperature_2m_min,relative_humidity_2m_max,precipitation_sum,rain_sum,snowfall_sum,precipitation_probability_max,windspeed_10m_max,winddirection_10m_dominant,weathercode,sunrise,sunset",
+            hourly: "temperature_2m,relative_humidity_2m,dew_point_2m,cloud_cover,precipitation_probability,rain,snowfall,wind_speed_10m,weathercode",
             current: "temperature_2m,relative_humidity_2m,wind_speed_10m",
           });
 
@@ -3720,7 +3750,13 @@
           const todayHigh = daily?.temperature_2m_max?.[0];
           const todayLow = daily?.temperature_2m_min?.[0];
           const todayCode = daily?.weathercode?.[0];
-          const todayCondition = weatherCondition(todayCode, data?.current?.temperature_2m ?? todayLow ?? todayHigh);
+          const todayCondition = dailyWeatherCondition({
+            code: todayCode,
+            high: todayHigh,
+            low: todayLow,
+            rain: daily?.rain_sum?.[0],
+            snowfall: daily?.snowfall_sum?.[0],
+          });
 
           const times = hourly?.time ?? [];
           const hum = hourly?.relative_humidity_2m ?? [];
@@ -3747,6 +3783,8 @@
             humidMax: daily?.relative_humidity_2m_max?.[i],
             precipProb: daily?.precipitation_probability_max?.[i],
             precip: daily?.precipitation_sum?.[i],
+            rain: daily?.rain_sum?.[i],
+            snowfall: daily?.snowfall_sum?.[i],
             windMax: daily?.windspeed_10m_max?.[i],
             windDir: daily?.winddirection_10m_dominant?.[i],
             code: daily?.weathercode?.[i],
@@ -4171,6 +4209,13 @@
             ? (zipLabels[zip] ?? zip)
             : "Choose a location";
         const currentLocationLabel = compactCurrentLocationLabel(place, activeLocation);
+        const forecastPointLabel = place
+          ? place.weatherSourceLabel ||
+            `${place.city ?? ""}${place.state ? `, ${place.state}` : ""}${place.zip ? ` ${place.zip}` : ""}`.trim()
+          : "";
+        const forecastAsOfTime = lastUpdated
+          ? lastUpdated.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+          : "";
 
         return (
           <div className={`${bgClass} min-h-screen transition-colors duration-700`}>
@@ -4854,8 +4899,11 @@
                         ? "Loading…"
                         : "Search or use current location"}
                     </div>
-                    {place?.weatherSourceLabel ? (
-                      <div className={`mt-1 text-xs ${subText}`}>Forecast point: {place.weatherSourceLabel}</div>
+                    {forecastPointLabel ? (
+                      <div className={`mt-1 text-xs ${subText}`}>
+                        Forecast point: {forecastPointLabel}
+                        {forecastAsOfTime ? ` · as of ${forecastAsOfTime}` : ""}
+                      </div>
                     ) : null}
 
                     <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -5037,13 +5085,19 @@
                     <div className={`text-xs font-semibold uppercase tracking-wide ${subText}`}>Today details</div>
                     <div className="mt-3 grid grid-cols-2 gap-3">
                       <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white ring-black/5"}`}>
-                        <div className={`text-xs ${subText}`}>Rain Chance</div>
+                        <div className={`text-xs ${subText}`}>Precip Chance</div>
                         <div className="mt-1 text-xl font-semibold">{formatPct(derived?.selectedDayData?.precipProb)}</div>
                       </div>
                       <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white ring-black/5"}`}>
-                        <div className={`text-xs ${subText}`}>Precip Total</div>
+                        <div className={`text-xs ${subText}`}>Liquid Precip</div>
                         <div className="mt-1 text-xl font-semibold">{formatInches(derived?.selectedDayData?.precip)}</div>
                       </div>
+                      {Number(derived?.selectedDayData?.snowfall) >= 0.1 ? (
+                        <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white ring-black/5"}`}>
+                          <div className={`text-xs ${subText}`}>Forecast Snow</div>
+                          <div className="mt-1 text-xl font-semibold">{formatInches(derived?.selectedDayData?.snowfall)}</div>
+                        </div>
+                      ) : null}
                       <div className={`rounded-2xl p-3 ring-1 ${isDarkUI ? "bg-white/5 ring-white/10" : "bg-white ring-black/5"}`}>
                         <div className={`text-xs ${subText}`}>Wind Max</div>
                         <div className="mt-1 text-xl font-semibold">{formatMph(derived?.selectedDayData?.windMax)}</div>
@@ -5055,9 +5109,6 @@
                     </div>
                   </div>
 
-                  {lastUpdated ? (
-                    <div className={`mt-4 text-xs ${subText}`}>Updated {lastUpdated.toLocaleTimeString()}</div>
-                  ) : null}
                 </div>
 
                 {/* MIDDLE */}
@@ -5482,7 +5533,7 @@
                         const startPct = Number.isFinite(low) ? ((low - minLow) / span) * 100 : 0;
 	                        const widthPct = Number.isFinite(low) && Number.isFinite(high) ? (Math.max(1, high - low) / span) * 100 : 18;
 	                        const showRain = Number(d.precipProb) >= 20;
-	                        const condition = weatherCondition(d.code, d.low);
+	                        const condition = dailyWeatherCondition(d);
 
 	                        const isExpanded = expandedForecastDate === d.date;
 	                        const rows = isExpanded ? expandedHourlyRows : [];
@@ -5607,7 +5658,7 @@
 	                            ? "ring-2 ring-white/25"
 	                            : "ring-2 ring-black/10"
 	                          : "ring-1";
-	                    const condition = weatherCondition(d.code, d.low);
+	                    const condition = dailyWeatherCondition(d);
 
                     return (
 	                      <button
@@ -5660,7 +5711,8 @@
                         </div>
 
                         <div className={`mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm ${subText}`}>
-                          <span>Precip {formatInches(d.precip)}</span>
+                          <span>Liquid {formatInches(d.precip)}</span>
+                          {Number(d.snowfall) >= 0.1 ? <span>Snow {formatInches(d.snowfall)}</span> : null}
                           <span>Wind {formatMph(d.windMax)}</span>
                         </div>
                       </button>
@@ -5686,7 +5738,7 @@
                         <th className="px-3 py-2">Low</th>
                         <th className="px-3 py-2">Humidity</th>
                         <th className="px-3 py-2">PoP</th>
-                        <th className="px-3 py-2">Precip</th>
+                        <th className="px-3 py-2">Liquid / Snow</th>
                         <th className="px-3 py-2">Wind</th>
                       </tr>
                     </thead>
@@ -5729,7 +5781,7 @@
 
 	                        const isExpanded = expandedForecastDate === d.date;
 	                        const rows = isExpanded ? expandedHourlyRows : [];
-	                        const condition = weatherCondition(d.code, d.low);
+	                        const condition = dailyWeatherCondition(d);
 
 	                        return (
 	                          <React.Fragment key={d.date}>
@@ -5768,7 +5820,10 @@
 	                              <td className="px-3 py-3 text-sm font-semibold">{formatTemp(d.low)}</td>
 	                              <td className="px-3 py-3 text-sm">{formatPct(d.humidMax)}</td>
 	                              <td className="px-3 py-3 text-sm">{formatPct(d.precipProb)}</td>
-	                              <td className="px-3 py-3 text-sm">{formatInches(d.precip)}</td>
+	                              <td className="px-3 py-3 text-sm">
+                                  <div>{formatInches(d.precip)} liquid</div>
+                                  {Number(d.snowfall) >= 0.1 ? <div className={subText}>{formatInches(d.snowfall)} snow</div> : null}
+                                </td>
 	                              <td className="px-3 py-3 text-sm">{formatMph(d.windMax)}</td>
 	                            </tr>
 	                            {isExpanded ? (
